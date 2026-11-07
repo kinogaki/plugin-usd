@@ -1,7 +1,7 @@
 //! Files read through the format into the standard values: the fixtures'
 //! prims, primvars, bindings, lights and cameras where the project puts
 //! them; instances of shared prototypes; damaged files, cancellation.
-use crate::support::{fixture, item, materials, metres, read_file};
+use crate::support::{Scratch, fixture, item, materials, metres, read_file};
 use kinogaki_render_api::standard::Shape;
 use kinogaki_studio_api::geometry::image::ImageFile;
 use kinogaki_studio_api::geometry::{Domain, Units, UpAxis, Vec3, names};
@@ -62,6 +62,48 @@ fn a_left_handed_mesh_winds_its_faces_the_other_way() {
         .get(item(&read, "Moving").1.unwrap())
         .unwrap();
     assert_eq!(moving.primitives().primitive(0), [0, 2, 1]);
+}
+
+#[test]
+fn a_light_or_camera_out_of_range_is_left_out_and_said() {
+    let scratch = Scratch::new("out-of-range");
+    let path = scratch.path().join("lights.usda");
+    let text = r#"#usda 1.0
+def SphereLight "Dim"
+{
+    float inputs:intensity = -5
+}
+def DiskLight "Flat"
+{
+    float inputs:radius = 0
+}
+def Camera "Blind"
+{
+    float focalLength = 0
+}
+def SphereLight "Bulb"
+{
+    float inputs:intensity = 5
+}
+"#;
+    std::fs::write(&path, text).unwrap();
+    let read = read_file(&path, metres(), false);
+    for name in ["Dim", "Flat", "Blind"] {
+        let held = read.items.iter().find(|i| i.name == name);
+        assert!(
+            held.is_none_or(|i| i.data.is_none()),
+            "{name} isn't a value"
+        );
+        let said = read.warnings.iter().map(|w| &w.message);
+        assert!(
+            said.clone()
+                .any(|w| w.contains(name) && w.contains("left out")),
+            "{name}: {:?}",
+            read.warnings
+        );
+    }
+    let bulb = standard::light().get(item(&read, "Bulb").1.unwrap());
+    assert_eq!(bulb.map(|l| l.intensity), Some(5.0));
 }
 
 #[test]

@@ -29,7 +29,6 @@ use kinogaki_studio_api::{
     DataTypeId, Error, FileFormat, FormatId, FormatOptions, FormatWriter, Imported, Input, Package,
     PackageId, Purpose, Reading, Value, standard,
 };
-use std::sync::LazyLock;
 
 /// The package's id.
 pub fn id() -> PackageId {
@@ -48,15 +47,13 @@ pub fn package() -> Package {
 
 /// What a USD file holds: materials, polygons and curves, instances,
 /// lights and cameras.
-static TYPES: LazyLock<[DataTypeId; 5]> = LazyLock::new(|| {
-    [
-        standard::materials().id(),
-        standard::geometry().id(),
-        standard::instances().id(),
-        standard::light().id(),
-        standard::camera().id(),
-    ]
-});
+const TYPES: &[DataTypeId] = &[
+    standard::materials().id(),
+    standard::geometry().id(),
+    standard::instances().id(),
+    standard::light().id(),
+    standard::camera().id(),
+];
 
 /// The format.
 pub struct Usd;
@@ -80,7 +77,7 @@ impl FileFormat for Usd {
         )
     }
     fn produces(&self) -> &[DataTypeId] {
-        &*TYPES
+        TYPES
     }
     /// Textures on disk stay paths unless embedded; a package's are
     /// embedded whatever it says.

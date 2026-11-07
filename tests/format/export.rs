@@ -305,9 +305,9 @@ fn lights_cameras_and_a_domes_image_come_back() {
     };
     let items = [
         looks(vec![], vec![sky]),
-        FileItem::top("Sky", standard::light().wrap(dome.clone())),
-        FileItem::top("Key", standard::light().wrap(spot.clone())),
-        FileItem::top("Shot", standard::camera().wrap(lens.clone())),
+        FileItem::top("Sky", standard::light().wrap(dome.clone()).unwrap()),
+        FileItem::top("Key", standard::light().wrap(spot.clone()).unwrap()),
+        FileItem::top("Shot", standard::camera().wrap(lens.clone()).unwrap()),
     ];
     write_file(&path, &items, metres());
     let read = read_file(&path, metres(), false);

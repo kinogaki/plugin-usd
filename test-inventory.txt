@@ -27,6 +27,7 @@ kinogaki-usd/format test hostile::token_sections_claiming_more_than_they_hold_ar
 kinogaki-usd/format test hostile::variables_doubling_a_string_fail_without_the_doubling
 kinogaki-usd/format test import::a_dome_reads_its_image_by_op_and_key
 kinogaki-usd/format test import::a_left_handed_mesh_winds_its_faces_the_other_way
+kinogaki-usd/format test import::a_light_or_camera_out_of_range_is_left_out_and_said
 kinogaki-usd/format test import::a_z_up_stage_lands_in_a_y_up_project_with_its_bindings_and_primvars
 kinogaki-usd/format test import::cameras_and_lights_look_where_the_stage_has_them_look_in_another_up_axis
 kinogaki-usd/format test import::damaged_files_fail_and_a_cancelled_read_stops

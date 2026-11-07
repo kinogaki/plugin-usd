@@ -261,16 +261,17 @@ impl Walk<'_, '_> {
             NodeKind::Camera(camera) => {
                 let space = cx.space;
                 let lens = lights::camera(camera, self.scene.meters_per_unit, space.scale());
-                match standard::lens(lens) {
-                    Ok(lens) => standard::camera().wrap(lens),
+                match standard::camera().wrap(lens) {
+                    Ok(lens) => lens,
                     Err(e) => return self.left_out(node, &e),
                 }
             }
             NodeKind::Light(light) => {
                 let scale = self.shaping.space.scale();
                 let image = light.texture.as_ref().and_then(|path| self.image(path));
-                match lights::light(light, scale, image, self.reading.colors) {
-                    Ok(light) => standard::light().wrap(light),
+                let light = lights::light(light, scale, image, self.reading.colors);
+                match light.and_then(|l| standard::light().wrap(l)) {
+                    Ok(light) => light,
                     Err(e) => return self.left_out(node, &e),
                 }
             }
