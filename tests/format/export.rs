@@ -213,6 +213,60 @@ fn instances_are_written_as_copies_each_with_its_material() {
     assert_eq!(shown, [keys[0], keys[1], keys[0]]);
 }
 
+/// An instance whose `material_map` renders its prototype's Red as Blue
+/// places a prototype written in Blue; the others keep the one in Red.
+#[test]
+fn an_instances_material_map_writes_a_prototype_in_its_materials() {
+    use kinogaki_studio_api::geometry::{AttributeType, Values};
+    let dir = Scratch::new("mapped");
+    let path = dir.join("mapped.usda");
+    let leaf = standard::geometry().wrap(square("/Looks/Red"));
+    let xforms: Vec<Xform> = (0..3)
+        .map(|i| Xform::translation(Vec3::new(i as f64, 0.0, 0.0)))
+        .collect();
+    let ty = AttributeType {
+        array: true,
+        ..AttributeType::TEXT
+    };
+    let pairs = Values::Text(Text::from_strs(["/Looks/Red", "/Looks/Blue"]));
+    let map = Attribute::arrays(ty, vec![0, 0, 2, 2].into(), pairs).unwrap();
+    let attributes = (Attributes::new())
+        .with(Domain::Instance, names::MATERIAL_MAP, map)
+        .unwrap();
+    let row = Instances::new(vec![leaf], Column::new(xforms), None, attributes).unwrap();
+    let items = [
+        looks(
+            vec![plain("/Looks/Red", "Red"), plain("/Looks/Blue", "Blue")],
+            vec![],
+        ),
+        FileItem::top("Row", standard::instances().wrap(row)),
+    ];
+    write_file(&path, &items, metres());
+    let read = read_file(&path, metres(), false);
+    let keys: Vec<&str> = (materials(&read).materials.iter())
+        .map(|m| m.key.as_str())
+        .collect();
+    let shown: Vec<String> = (read.items.iter())
+        .filter(|i| (i.parent).is_some_and(|p| read.items[p].name.starts_with("instance")))
+        .filter_map(|i| standard::geometry().get(i.data.as_ref()?))
+        .map(|g| {
+            let named = g.attributes().text(Domain::Primitive, names::MATERIAL);
+            named.unwrap().get(0).unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(shown.len(), 3);
+    assert_eq!(shown[0], shown[2], "the unmapped share the prototype's");
+    assert_ne!(shown[1], shown[0], "the mapped one's own");
+    let name = |key: &str| {
+        (materials(&read).materials.iter())
+            .find(|m| m.key == key)
+            .map(|m| m.name.clone())
+    };
+    assert_eq!(name(&shown[1]).as_deref(), Some("Blue"));
+    assert_eq!(name(&shown[0]).as_deref(), Some("Red"));
+    assert_eq!(keys.len(), 2);
+}
+
 #[test]
 fn lights_cameras_and_a_domes_image_come_back() {
     let dir = Scratch::new("lights");

@@ -8,7 +8,9 @@
 //! its prim, placed relative to its parent's: polygons and curves
 //! ([`geometry`]), what the host makes polygons of (a B-rep), lights and
 //! cameras ([`crate::lights`]), and instances as copies of their
-//! prototypes, each instance's material bound on its copy.
+//! prototypes, each instance's material bound on its copy; an instance
+//! whose `material_map` renders the prototype's materials as others places
+//! a prototype written in those, once a map.
 mod assets;
 mod geometry;
 mod materials;
@@ -157,11 +159,16 @@ struct Out<'w> {
     double_sided: Vec<bool>,
     /// The file each image domes name by `op:` reads, by its key.
     images: HashMap<String, ImageFile>,
-    /// Each prototype written, by the value it is.
-    prototypes: Vec<(Data, Prototype)>,
+    /// Each prototype written, by what it is written of.
+    prototypes: Vec<(Of, Prototype)>,
     writing: &'w Writing<'w>,
     warnings: Vec<String>,
 }
+
+/// What a prototype is written of: a value, and the material map its
+/// instances render it with (pairs of a material its primitives name and
+/// the one they render with; empty: its own materials).
+type Of = (Data, Vec<(String, String)>);
 
 impl Out<'_> {
     /// The materials and images `item` holds, the materials under `looks`.
@@ -200,7 +207,7 @@ impl Out<'_> {
         let at = self.scene.nodes.len();
         let mut children: Vec<Node> = Vec::new();
         let kinds = match &item.data {
-            Some(data) => self.kinds(data, &item.name)?,
+            Some(data) => self.kinds(data, &[], &item.name)?,
             None => None,
         };
         match kinds {
@@ -233,8 +240,15 @@ impl Out<'_> {
         Ok(at)
     }
 
-    /// What `data` (of the item named `name`) is written as.
-    fn kinds(&mut self, data: &Data, name: &str) -> Result<Option<Kinds>, Error> {
+    /// What `data` (of the item named `name`) is written as, its polygons'
+    /// materials through `map` (pairs of a material they name and the one
+    /// they render with instead).
+    fn kinds(
+        &mut self,
+        data: &Data,
+        map: &[(&str, &str)],
+        name: &str,
+    ) -> Result<Option<Kinds>, Error> {
         if let Some(instances) = standard::instances().get(data) {
             return Ok(Some(Kinds::Instances(self.copies(instances)?)));
         }
@@ -267,11 +281,13 @@ impl Out<'_> {
                 }
             },
         };
+        let rendered = standard::materials_mapped(value, map)?;
         let shaping = Shaping {
             materials: &self.materials,
             double_sided: &self.double_sided,
             working: self.writing.colors.working(),
         };
+        let value = rendered.as_ref().unwrap_or(value);
         let prims = geometry::prims(value, &shaping, &mut self.warnings);
         Ok(Some(Kinds::Prims(prims.prims)))
     }
@@ -308,17 +324,24 @@ impl Out<'_> {
         let bound = attributes.text(Domain::Instance, standard_names::MATERIAL);
         let mut prototypes = Vec::with_capacity(instances.prototypes().len());
         for prototype in instances.prototypes().iter() {
-            prototypes.push(self.prototype(prototype)?);
+            prototypes.push(self.prototype(prototype, &[])?);
         }
         let mut names = Unique::default();
         let mut copies = Vec::with_capacity(instances.len());
         for i in 0..instances.len() {
-            let Some(prototype) = prototypes[instances.prototype_index(i)] else {
+            let key = bound.and_then(|b| b.get(i));
+            let map = standard::material_map(attributes, i);
+            let at = instances.prototype_index(i);
+            let prototype = match key.is_none() && !map.is_empty() {
+                // A map: the prototype written in the materials it maps to.
+                true => self.prototype(&instances.prototypes()[at], &map)?,
+                false => prototypes[at],
+            };
+            let Some(prototype) = prototype else {
                 continue;
             };
             let name = named.and_then(|n| n.get(i)).filter(|n| !n.is_empty());
             let name = names.take(&names::identifier(name.unwrap_or("instance")));
-            let key = bound.and_then(|b| b.get(i));
             copies.push(Node {
                 transform: matrix(&instances.xforms()[i]),
                 instance: Some(prototype),
@@ -329,17 +352,19 @@ impl Out<'_> {
         Ok(copies)
     }
 
-    /// The prototype `value` is, written once; none for a value nothing
-    /// here writes.
-    fn prototype(&mut self, value: &Data) -> Result<Option<usize>, Error> {
-        if let Some(at) = self
-            .prototypes
-            .iter()
-            .position(|(held, _)| held.ptr_eq(value))
+    /// The prototype `value` is, rendered through `map` (pairs of a
+    /// material its primitives name and the one they render with instead),
+    /// written once; none for a value nothing here writes.
+    fn prototype(&mut self, value: &Data, map: &[(&str, &str)]) -> Result<Option<usize>, Error> {
+        let mapped: Vec<(String, String)> = (map.iter())
+            .map(|&(from, to)| (from.to_owned(), to.to_owned()))
+            .collect();
+        if let Some(at) =
+            (self.prototypes.iter()).position(|((held, by), _)| held.ptr_eq(value) && *by == mapped)
         {
             return Ok(Some(at));
         }
-        let nodes = match self.kinds(value, "a prototype")? {
+        let nodes = match self.kinds(value, map, "a prototype")? {
             Some(Kinds::Prims(prims)) => {
                 let mut names = Unique::default();
                 (prims.into_iter())
@@ -368,7 +393,7 @@ impl Out<'_> {
             root: Path::absolute_root(),
             nodes,
         };
-        self.prototypes.push((value.clone(), prototype));
+        self.prototypes.push(((value.clone(), mapped), prototype));
         Ok(Some(self.prototypes.len() - 1))
     }
 }

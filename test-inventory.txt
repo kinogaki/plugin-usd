@@ -3,6 +3,7 @@
 kinogaki-usd/format hand materials::hand_run_usdchecker_arkit_passes_materialx_and_preview_surface_usdz
 kinogaki-usd/format hand measure::hand_run_the_grid_reads_and_writes_within_its_budgets
 kinogaki-usd/format hand measure::hand_run_the_kitchen_set_imports_within_its_budget
+kinogaki-usd/format test export::an_instances_material_map_writes_a_prototype_in_its_materials
 kinogaki-usd/format test export::curves_come_back_of_their_basis
 kinogaki-usd/format test export::instances_are_written_as_copies_each_with_its_material
 kinogaki-usd/format test export::lights_cameras_and_a_domes_image_come_back
