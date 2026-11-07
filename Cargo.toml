@@ -1,0 +1,41 @@
+[package]
+name = "kinogaki-usd"
+description = "Universal Scene Description as a format plugin for Kinogaki Studio: usda, usdc and usdz layers read and written, stages composed, and the scene (meshes, curves, points, instances, cameras, lights and UsdShade materials) read and authored"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# The format builds from its own repository and the public SDK's alone,
+# checked out side by side as Studio's tree lays them out (README
+# "Building"): its manifest names everything it needs instead of inheriting
+# it from the tree.
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+
+[dependencies]
+# The process's workers: large arrays parse, format, compress and decode on
+# them, within the host's one budget.
+kinogaki-studio-api = { path = "../../sdk/crates/api" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# Corpus, fuzz and round-trip tests parse large layers; keep test builds fast.
+[profile.test]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+overflow-checks = true

@@ -1,0 +1,8 @@
+#usda 1.0
+
+def "B" (
+    references = @./cycle_a.usda@</A>
+)
+{
+    custom int fromB = 1
+}

@@ -1,0 +1,77 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 0.01
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def BasisCurves "Wire"
+    {
+        uniform token type = "linear"
+        uniform token wrap = "periodic"
+        int[] curveVertexCounts = [3, 4]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
+        float[] widths = [0.5, 0.25] (
+            interpolation = "uniform"
+        )
+        color3f[] primvars:displayColor = [(1, 0, 0)] (
+            interpolation = "constant"
+        )
+    }
+
+    def BasisCurves "Hair"
+    {
+        uniform token type = "cubic"
+        uniform token basis = "bspline"
+        uniform token wrap = "pinned"
+        int[] curveVertexCounts = [5]
+        point3f[] points = [(0, 0, 0), (0, 1, 0), (1, 2, 0), (1, 3, 0), (2, 4, 0)]
+        float[] widths = [0.5, 0.25, 0.25, 0.25, 0.125]
+        float[] primvars:age = [1, 2, 3, 4, 5] (
+            interpolation = "varying"
+        )
+    }
+
+    def BasisCurves "Path"
+    {
+        int[] curveVertexCounts = [4]
+        point3f[] points = [(0, 0, 0), (1, 1, 0), (2, 1, 0), (3, 0, 0)]
+    }
+
+    def NurbsCurves "Arc"
+    {
+        int[] curveVertexCounts = [3]
+        int[] order = [3]
+        double[] knots = [0, 0, 0, 1, 1, 1]
+        double2[] ranges = [(0, 1)]
+        double[] pointWeights = [1, 0.7071067811865476, 1]
+        point3f[] points = [(1, 0, 0), (1, 1, 0), (0, 1, 0)]
+        double3 xformOp:translate = (0, 0, 5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def BasisCurves "Short"
+    {
+        uniform token type = "linear"
+        int[] curveVertexCounts = [3]
+        point3f[] points = [(0, 0, 0), (1, 0, 0)]
+    }
+
+    def NurbsCurves "BadKnots"
+    {
+        int[] curveVertexCounts = [3]
+        int[] order = [3]
+        double[] knots = [0, 1]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+    }
+
+    def BasisCurves "Thin"
+    {
+        uniform token type = "linear"
+        int[] curveVertexCounts = [2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0)]
+        float[] widths = [1, 2, 3]
+    }
+}

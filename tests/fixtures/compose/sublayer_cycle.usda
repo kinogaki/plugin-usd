@@ -1,0 +1,11 @@
+#usda 1.0
+(
+    subLayers = [
+        @./sublayer_cycle.usda@,
+        @./missing.usda@
+    ]
+)
+
+def "Here"
+{
+}

@@ -1,0 +1,23 @@
+#usda 1.0
+
+def "Asset"
+{
+    def "Part"
+    {
+        custom int size = 3
+    }
+}
+
+def "One" (
+    instanceable = true
+    references = </Asset>
+)
+{
+}
+
+def "Two" (
+    instanceable = true
+    references = </Asset>
+)
+{
+}
