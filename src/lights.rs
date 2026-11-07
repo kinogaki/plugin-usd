@@ -6,7 +6,7 @@
 //! standard's the working space.
 use crate::usd::scene::{Camera as UsdCamera, Cone, Light as UsdLight, LightKind, Projection};
 use crate::usd::sdf::Token;
-use kinogaki_render_api::standard::{Emission, Light, Shape};
+use kinogaki_render_api::standard::{Emission, Light, LightShape};
 use kinogaki_render_api::{Camera, Projection as Lens};
 use kinogaki_studio_api::Error;
 use kinogaki_studio_api::color::{ColorService, LIN_REC709};
@@ -27,18 +27,18 @@ pub(crate) fn light(
 ) -> Result<Light, Error> {
     let length = |v: f64| (v * scale) as f32;
     let shape = match light.kind {
-        LightKind::Rect => Shape::Rect {
+        LightKind::Rect => LightShape::Rect {
             width: length(light.width),
             height: length(light.height),
         },
-        LightKind::Disk => Shape::Disk {
+        LightKind::Disk => LightShape::Disk {
             radius: length(light.radius),
         },
-        LightKind::Dome => Shape::Dome {
+        LightKind::Dome => LightShape::Dome {
             image: image.map(Into::into),
             ground: None,
         },
-        LightKind::Distant => Shape::Distant {
+        LightKind::Distant => LightShape::Distant {
             angle: light.angle as f32,
         },
         LightKind::Sphere => {
@@ -46,7 +46,7 @@ pub(crate) fn light(
                 angle: 180.0,
                 softness: 0.0,
             });
-            Shape::Spot {
+            LightShape::Spot {
                 radius: length(light.radius),
                 cone_angle: cone.angle as f32,
                 cone_softness: cone.softness as f32,
@@ -84,21 +84,21 @@ pub(crate) fn usd_light(
 ) -> Result<UsdLight, Error> {
     let length = |v: f32| f64::from(v) / scale;
     let kind = match light.shape {
-        Shape::Rect { .. } => LightKind::Rect,
-        Shape::Disk { .. } => LightKind::Disk,
-        Shape::Dome { .. } => LightKind::Dome,
-        Shape::Distant { .. } => LightKind::Distant,
-        Shape::Spot { .. } => LightKind::Sphere,
+        LightShape::Rect { .. } => LightKind::Rect,
+        LightShape::Disk { .. } => LightKind::Disk,
+        LightShape::Dome { .. } => LightKind::Dome,
+        LightShape::Distant { .. } => LightKind::Distant,
+        LightShape::Spot { .. } => LightKind::Sphere,
     };
     let mut out = UsdLight::new(kind);
     match &light.shape {
-        Shape::Rect { width, height } => {
+        LightShape::Rect { width, height } => {
             (out.width, out.height) = (length(*width), length(*height))
         }
-        Shape::Disk { radius } => out.radius = length(*radius),
-        Shape::Dome { .. } => out.texture = texture,
-        Shape::Distant { angle } => out.angle = f64::from(*angle),
-        Shape::Spot {
+        LightShape::Disk { radius } => out.radius = length(*radius),
+        LightShape::Dome { .. } => out.texture = texture,
+        LightShape::Distant { angle } => out.angle = f64::from(*angle),
+        LightShape::Spot {
             radius,
             cone_angle,
             cone_softness,
@@ -178,18 +178,18 @@ mod tests {
     #[test]
     fn lights_read_and_write_back_in_any_units() {
         let shapes = [
-            Shape::Rect {
+            LightShape::Rect {
                 width: 2.0,
                 height: 0.5,
             },
-            Shape::Disk { radius: 0.25 },
-            Shape::Distant { angle: 0.53 },
-            Shape::Spot {
+            LightShape::Disk { radius: 0.25 },
+            LightShape::Distant { angle: 0.53 },
+            LightShape::Spot {
                 radius: 0.1,
                 cone_angle: 30.0,
                 cone_softness: 0.2,
             },
-            Shape::Spot {
+            LightShape::Spot {
                 radius: 0.1,
                 cone_angle: 180.0,
                 cone_softness: 0.0,

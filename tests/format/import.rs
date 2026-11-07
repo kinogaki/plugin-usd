@@ -2,7 +2,7 @@
 //! prims, primvars, bindings, lights and cameras where the project puts
 //! them; instances of shared prototypes; damaged files, cancellation.
 use crate::support::{Scratch, fixture, item, materials, metres, read_file};
-use kinogaki_render_api::standard::Shape;
+use kinogaki_render_api::standard::LightShape;
 use kinogaki_studio_api::geometry::image::ImageFile;
 use kinogaki_studio_api::geometry::{Domain, Units, UpAxis, Vec3, names};
 use kinogaki_studio_api::image_files::{IMAGE_NODE, OP, image_source};
@@ -118,7 +118,7 @@ fn units_scale_points_and_lengths_but_no_placement() {
         .unwrap();
     assert_eq!(
         key.shape,
-        Shape::Rect {
+        LightShape::Rect {
             width: 20.0,
             height: 30.0
         }
@@ -133,7 +133,7 @@ fn units_scale_points_and_lengths_but_no_placement() {
     let bulb = standard::light()
         .get(item(&read, "Bulb").1.unwrap())
         .unwrap();
-    let Shape::Spot { cone_angle, .. } = bulb.shape else {
+    let LightShape::Spot { cone_angle, .. } = bulb.shape else {
         panic!("a sphere light is a spot");
     };
     assert_eq!(cone_angle, 180.0);
@@ -252,7 +252,7 @@ def DomeLight "Sky"
     let sky = standard::light()
         .get(item(&read, "Sky").1.unwrap())
         .unwrap();
-    let Shape::Dome {
+    let LightShape::Dome {
         image: Some(named), ..
     } = &sky.shape
     else {

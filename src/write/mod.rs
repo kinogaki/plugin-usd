@@ -254,7 +254,7 @@ impl Out<'_> {
         }
         if let Some(light) = standard::light().get(data) {
             let texture = match &light.shape {
-                Shape::Dome {
+                LightShape::Dome {
                     image: Some(image), ..
                 } => self.dome(image),
                 _ => None,

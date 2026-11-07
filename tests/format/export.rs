@@ -3,7 +3,7 @@
 //! units; curves; instances as copies, each with its own material; lights
 //! and cameras; a dome naming an image of the file's.
 use crate::support::{Scratch, item, materials, metres, read_file, square, write_file};
-use kinogaki_render_api::standard::{Light, Shape};
+use kinogaki_render_api::standard::{Light, LightShape};
 use kinogaki_render_api::{Camera, Projection};
 use kinogaki_studio_api::FileItem;
 use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageFile, ImageSource};
@@ -280,7 +280,7 @@ fn lights_cameras_and_a_domes_image_come_back() {
         ),
     };
     let dome = Light {
-        shape: Shape::Dome {
+        shape: LightShape::Dome {
             image: Some(format!("{OP}/Looks/Sky").into()),
             ground: None,
         },
@@ -288,7 +288,7 @@ fn lights_cameras_and_a_domes_image_come_back() {
         ..Light::default()
     };
     let spot = Light {
-        shape: Shape::Spot {
+        shape: LightShape::Spot {
             radius: 0.25,
             cone_angle: 30.0,
             cone_softness: 0.5,
@@ -323,7 +323,7 @@ fn lights_cameras_and_a_domes_image_come_back() {
         .get(item(&read, "Sky").1.unwrap())
         .unwrap();
     let image = &materials(&read).images[0];
-    let Shape::Dome {
+    let LightShape::Dome {
         image: Some(named), ..
     } = &back.shape
     else {
