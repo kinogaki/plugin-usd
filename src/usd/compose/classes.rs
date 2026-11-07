@@ -49,9 +49,7 @@ impl Composer {
                 continue;
             }
             // The class maps to the instance, every other path to itself.
-            let map = self
-                .arc_map(stack, &path, &node_path, LayerOffset::IDENTITY)
-                .with_root_identity();
+            let map = self.arc_map(stack, &path, &node_path, LayerOffset::IDENTITY, true)?;
             self.add_class_arc(indexer, path, arc, node, node, map, number as i32, None)?;
         }
         Ok(())

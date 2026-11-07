@@ -12,13 +12,14 @@
 //! subtree. The finished index culls subtrees with no opinions and is stored
 //! in strength order.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::Problems;
 use super::graph::{ArcType, PrimIndex};
 use super::layer_stack::Stacks;
 use super::layers::Layers;
-use super::map::namespace_depth;
+use super::map::{MapFunction, namespace_depth};
 use super::tasks::{Frame, Indexer, kind};
 use crate::usd::error::{Error, Result};
 use crate::usd::sdf::{Path, PathKind, PathMap, SpecType, Token, field};
@@ -58,9 +59,16 @@ pub struct Composer {
     /// Arcs to files of formats composition does not read.
     pub(super) foreign: Vec<ForeignArc>,
     cache: PathMap<Arc<PrimIndex>>,
+    /// Each arc's map, made once ([`Composer::arc_map`]).
+    pub(super) arc_maps: HashMap<ArcKey, MapFunction>,
     /// Nested builds under way, against runaway recursion.
     nesting: usize,
 }
+
+/// What an arc's map is made of: the layer stack whose relocations it goes
+/// through, its source and target paths, its time offset (by bits), and
+/// whether every other path maps to itself.
+pub(super) type ArcKey = (usize, Path, Path, [u64; 2], bool);
 
 /// A reference or payload to a file of a format composition does not read
 /// (a MaterialX document, which OpenUSD composes through its UsdMtlx file
@@ -127,6 +135,7 @@ impl Composer {
             composing: Path::absolute_root(),
             foreign: Vec::new(),
             cache: PathMap::default(),
+            arc_maps: HashMap::new(),
             nesting: 0,
         })
     }

@@ -20,6 +20,7 @@ use super::tasks::{Frame, Indexer, kind};
 use crate::usd::error::{Error, Result};
 use crate::usd::sdf::{LayerOffset, ListOp, Path, Value, field};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 /// How `_AddArc` adds a node (`_ArcOptions`).
 #[derive(Clone, Copy)]
@@ -285,11 +286,8 @@ impl Composer {
                 }
             }
         }
-        let mut map = self.arc_map(stack, &prim, &node_path, offset);
         // An internal arc also maps every other path to itself.
-        if internal {
-            map = map.with_root_identity();
-        }
+        let map = self.arc_map(stack, &prim, &node_path, offset, internal)?;
         let options = ArcOptions {
             contribute,
             ancestral: !is_root_prim(&prim),
@@ -318,21 +316,39 @@ impl Composer {
 
     /// The map of an arc from `source` to a node at `target_path`: source
     /// to target (variant selections stripped), after the target layer
-    /// stack's relocations at and below the target when it has any.
+    /// stack's relocations at and below the target when it has any, every
+    /// other path to itself when `root_identity`. Made once an arc: an index
+    /// built again (a child's from its parent's, a relocated prim's source)
+    /// shares it, so relocations under a target are held once however many
+    /// prims map through them. Its pairs are charged to the read's budget
+    /// as it is made.
     pub(super) fn arc_map(
-        &self,
+        &mut self,
         stack: usize,
         source: &Path,
         target_path: &Path,
         offset: LayerOffset,
-    ) -> MapFunction {
+        root_identity: bool,
+    ) -> Result<MapFunction> {
         let target = target_path.strip_variants();
-        let arc = MapFunction::of_pair(source.clone(), target.clone(), offset);
-        let layer_stack = self.stacks.stack(stack);
-        if !layer_stack.has_relocates() {
-            return arc;
+        let bits = [offset.offset, offset.scale].map(|v| (v + 0.0).to_bits());
+        let key = (stack, source.clone(), target.clone(), bits, root_identity);
+        if let Some(made) = self.arc_maps.get(&key) {
+            return Ok(made.clone());
         }
-        MapFunction::deferred_of(relocation_pairs(layer_stack, &target)).compose(&arc)
+        let mut map = MapFunction::of_pair(source.clone(), target.clone(), offset);
+        let layer_stack = self.stacks.stack(stack);
+        if layer_stack.has_relocates() {
+            let pairs = relocation_pairs(layer_stack, &target);
+            self.layers.budget().allocate(pairs.size())?;
+            map = MapFunction::deferred_of(Arc::new(pairs)).compose(&map);
+        }
+        if root_identity {
+            map = map.with_root_identity();
+            self.layers.budget().allocate(map.size())?;
+        }
+        self.arc_maps.insert(key, map.clone());
+        Ok(map)
     }
 
     /// Add an arc (`_AddArc`): unless it closes a cycle or its site is a

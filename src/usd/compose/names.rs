@@ -32,6 +32,7 @@ impl Composer {
             );
         }
         if !prohibited.is_empty() {
+            let prohibited: HashSet<Token> = prohibited.into_iter().collect();
             out.retain(|name| !prohibited.contains(name));
         }
         out
@@ -121,10 +122,7 @@ impl Composer {
         let mut removed: HashSet<Token> = HashSet::new();
         let mut banned: HashSet<Token> = prohibited.iter().cloned().collect();
         let relocates = &self.stacks.stack(stack).relocates;
-        for relocate in relocates {
-            if relocate.source.parent() != *path {
-                continue;
-            }
+        for relocate in relocates.moving_children_of(path) {
             let old = relocate.source.name_token();
             if !relocate.target.is_empty() && relocate.target.parent() == *path {
                 renamed.insert(old.clone(), relocate.target.name_token());
@@ -138,11 +136,8 @@ impl Composer {
         let held: HashSet<Token> = out.iter().cloned().collect();
         let mut added: Vec<Token> = Vec::new();
         let mut adding: HashSet<Token> = HashSet::new();
-        for relocate in relocates {
-            if relocate.target.is_empty()
-                || relocate.target.parent() != *path
-                || relocate.source.parent() == *path
-            {
+        for relocate in relocates.moving_to_children_of(path) {
+            if relocate.source.parent() == *path {
                 continue;
             }
             let name = relocate.target.name_token();

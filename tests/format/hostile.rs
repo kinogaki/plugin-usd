@@ -361,6 +361,40 @@ fn many_relocates_are_checked_in_linear_time() {
     assert!(said.contains("Conflicting relocation (5 times)"), "{said}");
 }
 
+/// A layer of `count` children a reference brings under `Root`, each
+/// relocated to a name of its own.
+fn relocated_children(count: usize) -> String {
+    let pairs: Vec<String> = (0..count)
+        .map(|k| format!("</Root/A{k}>: </Root/B{k}>"))
+        .collect();
+    let mut text = format!(
+        "#usda 1.0\n(\n    relocates = {{\n        {}\n    }}\n)\n",
+        pairs.join(",\n        ")
+    );
+    text.push_str("def Xform \"Root\" (\n    references = </Model>\n)\n{\n}\n");
+    text.push_str("over \"Model\"\n{\n");
+    for k in 0..count {
+        text.push_str(&format!("    def Cube \"A{k}\"\n    {{\n    }}\n"));
+    }
+    text.push_str("}\n");
+    text
+}
+
+#[test]
+fn many_relocated_children_compose_in_linear_time_and_memory() {
+    // Each child's index maps through the relocations under Root: one set
+    // of 40,000 pairs, shared, not a copy each (64 GB).
+    let count = 40_000;
+    let read = read_bytes(
+        "relocated.usda",
+        relocated_children(count).as_bytes(),
+        small(),
+    );
+    let read = read.unwrap();
+    let moved = (read.items.iter()).filter(|i| i.name.starts_with('B'));
+    assert_eq!(moved.count(), count);
+}
+
 #[test]
 fn a_prim_order_of_many_names_applies_in_linear_time() {
     // 100,000 children a reference brings, ordered last to first.

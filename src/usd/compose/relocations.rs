@@ -32,13 +32,17 @@ pub struct Relocate {
     pub origin: Path,
 }
 
-/// A layer stack's relocations, found by source and by target: each source
-/// and each target (but the empty one) is one relocation's.
+/// A layer stack's relocations, found by source and by target (each source
+/// and each target but the empty one is one relocation's), and by the
+/// parents of those.
 #[derive(Clone, Debug, Default)]
 pub struct Relocates {
     all: Vec<Relocate>,
     by_source: HashMap<Path, usize>,
     by_target: HashMap<Path, usize>,
+    /// Each parent's relocations away from it and to it, in order.
+    from_parent: HashMap<Path, Vec<usize>>,
+    to_parent: HashMap<Path, Vec<usize>>,
 }
 
 impl Relocates {
@@ -49,11 +53,34 @@ impl Relocates {
                 .map(|(k, r)| (path(r).clone(), k))
                 .collect()
         };
+        let under = |path: fn(&Relocate) -> &Path| {
+            let mut parents: HashMap<Path, Vec<usize>> = HashMap::new();
+            for (k, relocate) in all.iter().enumerate() {
+                if !path(relocate).is_empty() {
+                    parents.entry(path(relocate).parent()).or_default().push(k);
+                }
+            }
+            parents
+        };
         Relocates {
             by_source: at(|r| &r.source),
             by_target: at(|r| &r.target),
+            from_parent: under(|r| &r.source),
+            to_parent: under(|r| &r.target),
             all,
         }
+    }
+
+    /// Those moving a child of `parent`, in order.
+    pub fn moving_children_of(&self, parent: &Path) -> impl Iterator<Item = &Relocate> {
+        let at = self.from_parent.get(parent).map_or(&[][..], Vec::as_slice);
+        at.iter().map(|&k| &self.all[k])
+    }
+
+    /// Those moving something to a child of `parent`, in order.
+    pub fn moving_to_children_of(&self, parent: &Path) -> impl Iterator<Item = &Relocate> {
+        let at = self.to_parent.get(parent).map_or(&[][..], Vec::as_slice);
+        at.iter().map(|&k| &self.all[k])
     }
 
     /// Whether there are none.
@@ -215,8 +242,7 @@ pub fn relocation_pairs(stack: &LayerStack, path: &Path) -> PathPairs {
             continue;
         }
         seen.insert(&relocate.target);
-        pairs.sources.push(relocate.origin.clone());
-        pairs.targets.push(relocate.target.clone());
+        pairs.push(relocate.origin.clone(), relocate.target.clone());
     }
     for relocate in &stack.relocates {
         if relocate.target.is_empty()
@@ -225,8 +251,7 @@ pub fn relocation_pairs(stack: &LayerStack, path: &Path) -> PathPairs {
         {
             continue;
         }
-        pairs.sources.push(relocate.source.clone());
-        pairs.targets.push(relocate.target.clone());
+        pairs.push(relocate.source.clone(), relocate.target.clone());
     }
     pairs
 }

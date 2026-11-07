@@ -17,6 +17,7 @@ kinogaki-usd/format test hostile::an_array_shared_by_many_fields_decodes_once
 kinogaki-usd/format test hostile::layers_and_textures_outside_the_folder_are_left_unresolved
 kinogaki-usd/format test hostile::list_ops_of_many_items_apply_in_linear_time
 kinogaki-usd/format test hostile::many_alike_names_export_in_linear_time
+kinogaki-usd/format test hostile::many_relocated_children_compose_in_linear_time_and_memory
 kinogaki-usd/format test hostile::many_relocates_are_checked_in_linear_time
 kinogaki-usd/format test hostile::package_paths_open_usdz_files_alone_and_never_devices
 kinogaki-usd/format test hostile::reference_diamonds_compose_in_time_and_fail_past_the_node_limit
@@ -53,6 +54,7 @@ kinogaki-usd/lib test space::tests::matrices_and_placements_convert_both_ways
 kinogaki-usd/lib test usd::compose::assets::tests::normalizes_and_anchors
 kinogaki-usd/lib test usd::compose::expressions::tests::evaluates_expressions
 kinogaki-usd/lib test usd::compose::flatten::schemas::tests::finds_builtin_properties
+kinogaki-usd/lib test usd::compose::map::tests::a_large_set_maps_through_its_index_as_a_small_one_does
 kinogaki-usd/lib test usd::compose::map::tests::composes_and_inverts
 kinogaki-usd/lib test usd::compose::map::tests::maps_through_the_longest_prefix
 kinogaki-usd/lib test usd::compose::names::tests::orders_as_sdf

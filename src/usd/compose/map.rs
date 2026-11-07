@@ -13,46 +13,49 @@
 //! single set is needed.
 
 use crate::usd::sdf::{LayerOffset, Path, PathKind};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 
-/// One set of path pairs.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// How many pairs a set holds before it finds paths by their prefixes
+/// through an index rather than by looking at each pair.
+const INDEXED: usize = 16;
+
+/// One set of path pairs. A set of many (a layer stack's relocations) is
+/// shared between the maps holding it ([`MapFunction`]) and finds a path's
+/// pair through an index of its paths, made on first use, so mapping a path
+/// costs its depth, not the set's size.
+#[derive(Clone, Debug, Default)]
 pub struct PathPairs {
     /// Source paths.
-    pub sources: Vec<Path>,
+    sources: Vec<Path>,
     /// Target paths, one per source.
-    pub targets: Vec<Path>,
+    targets: Vec<Path>,
     /// Whether paths no pair covers map to themselves.
     pub root_identity: bool,
+    /// Each side's paths by where each first is ([`INDEXED`] or more).
+    index: OnceLock<[HashMap<Path, usize>; 2]>,
 }
 
-/// The index in `side` of the deepest path (at least `floor` deep) that is
-/// a prefix of `path`, or `side.len()`.
-fn best_match(path: &Path, side: &[Path], floor: u32) -> usize {
-    let mut best = side.len();
-    let mut best_depth = 0;
-    for (at, candidate) in side.iter().enumerate() {
-        if candidate.is_empty() {
-            continue;
-        }
-        let depth = candidate.depth();
-        if depth < floor {
-            continue;
-        }
-        if (best == side.len() || depth > best_depth) && path.has_prefix(candidate) {
-            best = at;
-            best_depth = depth;
-        }
+impl PartialEq for PathPairs {
+    fn eq(&self, other: &PathPairs) -> bool {
+        (self.root_identity, &self.sources, &self.targets)
+            == (other.root_identity, &other.sources, &other.targets)
     }
-    best
+}
+
+/// The side of a set of pairs a path is looked for on.
+#[derive(Clone, Copy)]
+enum Side {
+    Sources = 0,
+    Targets = 1,
 }
 
 impl PathPairs {
     /// No pairs.
     pub fn empty(root_identity: bool) -> PathPairs {
         PathPairs {
-            sources: Vec::new(),
-            targets: Vec::new(),
             root_identity,
+            ..PathPairs::default()
         }
     }
 
@@ -60,36 +63,86 @@ impl PathPairs {
         self.root_identity && self.sources.is_empty()
     }
 
-    fn push(&mut self, source: Path, target: Path) {
+    /// The bytes its pairs hold.
+    pub fn size(&self) -> u64 {
+        (2 * self.sources.len() * size_of::<Path>()) as u64
+    }
+
+    /// `source` to `target` added.
+    pub fn push(&mut self, source: Path, target: Path) {
         self.sources.push(source);
         self.targets.push(target);
+        self.index = OnceLock::new();
+    }
+
+    fn side(&self, side: Side) -> &[Path] {
+        match side {
+            Side::Sources => &self.sources,
+            Side::Targets => &self.targets,
+        }
+    }
+
+    /// Where on `side` the deepest path (at least `floor` deep) that is a
+    /// prefix of `path` is (the first of equal ones), or the side's length.
+    fn best_match(&self, path: &Path, side: Side, floor: u32) -> usize {
+        let paths = self.side(side);
+        if paths.len() < INDEXED {
+            let mut best = paths.len();
+            let mut best_depth = 0;
+            for (at, candidate) in paths.iter().enumerate() {
+                let depth = candidate.depth();
+                if candidate.is_empty() || depth < floor {
+                    continue;
+                }
+                if (best == paths.len() || depth > best_depth) && path.has_prefix(candidate) {
+                    best = at;
+                    best_depth = depth;
+                }
+            }
+            return best;
+        }
+        let index = &self.index.get_or_init(|| {
+            [Side::Sources, Side::Targets].map(|side| {
+                let mut index = HashMap::new();
+                for (at, path) in self.side(side).iter().enumerate() {
+                    if !path.is_empty() {
+                        index.entry(path.clone()).or_insert(at);
+                    }
+                }
+                index
+            })
+        })[side as usize];
+        // A path's prefixes are it and its ancestors, deepest first.
+        let mut up = path.clone();
+        while !up.is_empty() && up.depth() >= floor {
+            if let Some(&at) = index.get(&up) {
+                return at;
+            }
+            up = up.parent();
+        }
+        paths.len()
     }
 
     /// `path` mapped from the source namespace to the target one (target to
     /// source when `invert`); the empty path when it does not map.
     pub fn map(&self, path: &Path, invert: bool) -> Path {
-        let (from, to) = if invert {
-            (&self.targets, &self.sources)
-        } else {
-            (&self.sources, &self.targets)
+        let (from, to) = match invert {
+            true => (Side::Targets, Side::Sources),
+            false => (Side::Sources, Side::Targets),
         };
-        let best = best_match(path, from, 0);
-        let result = if best == from.len() {
-            if self.root_identity {
-                path.clone()
-            } else {
-                Path::empty()
-            }
-        } else {
-            path.replace_prefix(&from[best], &to[best])
+        let best = self.best_match(path, from, 0);
+        let result = match best < self.sources.len() {
+            true => path.replace_prefix(&self.side(from)[best], &self.side(to)[best]),
+            false if self.root_identity => path.clone(),
+            false => Path::empty(),
         };
         if result.is_empty() {
             return result;
         }
         // A pair with a longer target claiming the result makes it ambiguous.
-        let floor = to.get(best).map_or(0, Path::depth);
-        let better = best_match(&result, to, floor);
-        if better < to.len() && better != best {
+        let floor = self.side(to).get(best).map_or(0, Path::depth);
+        let better = self.best_match(&result, to, floor);
+        if better < self.sources.len() && better != best {
             return Path::empty();
         }
         result
@@ -101,10 +154,10 @@ impl PathPairs {
         for (source, target) in inner.sources.iter().zip(&inner.targets) {
             made.push(source.clone(), self.map(target, false));
         }
-        let covered = made.sources.len();
+        let covered: HashSet<&Path> = inner.sources.iter().collect();
         for (source, target) in self.sources.iter().zip(&self.targets) {
             let source = inner.map(source, true);
-            if source.is_empty() || made.sources[..covered].contains(&source) {
+            if source.is_empty() || covered.contains(&source) {
                 continue;
             }
             made.push(source, target.clone());
@@ -134,6 +187,7 @@ impl PathPairs {
             sources: self.targets.clone(),
             targets: self.sources.clone(),
             root_identity: self.root_identity,
+            index: OnceLock::new(),
         }
     }
 }
@@ -142,9 +196,9 @@ impl PathPairs {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapFunction {
     /// The pairs, unless composition was deferred.
-    pairs: PathPairs,
+    pairs: Arc<PathPairs>,
     /// A deferred composition's sets, outermost first (empty otherwise).
-    chain: Vec<PathPairs>,
+    chain: Vec<Arc<PathPairs>>,
     /// The time offset.
     pub offset: LayerOffset,
 }
@@ -153,7 +207,7 @@ impl MapFunction {
     /// The identity map.
     pub fn identity() -> MapFunction {
         MapFunction {
-            pairs: PathPairs::empty(true),
+            pairs: Arc::new(PathPairs::empty(true)),
             chain: Vec::new(),
             offset: LayerOffset::IDENTITY,
         }
@@ -168,14 +222,14 @@ impl MapFunction {
             pairs.push(source, target);
         }
         MapFunction {
-            pairs,
+            pairs: Arc::new(pairs),
             chain: Vec::new(),
             offset,
         }
     }
 
     /// The map of `pairs`, its composition deferred; the identity stays plain.
-    pub fn deferred_of(pairs: PathPairs) -> MapFunction {
+    pub fn deferred_of(pairs: Arc<PathPairs>) -> MapFunction {
         if pairs.is_identity() {
             return MapFunction {
                 pairs,
@@ -184,7 +238,7 @@ impl MapFunction {
             };
         }
         MapFunction {
-            pairs: PathPairs::empty(true),
+            pairs: Arc::new(PathPairs::empty(true)),
             chain: vec![pairs],
             offset: LayerOffset::IDENTITY,
         }
@@ -203,7 +257,7 @@ impl MapFunction {
         if !self.deferred() {
             return self.pairs.is_identity();
         }
-        self.chain.iter().all(PathPairs::is_identity)
+        self.chain.iter().all(|set| set.is_identity())
     }
 
     /// Whether paths no pair covers map to themselves.
@@ -244,7 +298,7 @@ impl MapFunction {
         let offset = self.offset.concatenate(&inner.offset);
         if !self.deferred() && !inner.deferred() {
             return MapFunction {
-                pairs: self.pairs.compose(&inner.pairs),
+                pairs: Arc::new(self.pairs.compose(&inner.pairs)),
                 chain: Vec::new(),
                 offset,
             };
@@ -258,20 +312,26 @@ impl MapFunction {
             }
         }
         MapFunction {
-            pairs: PathPairs::empty(true),
+            pairs: Arc::new(PathPairs::empty(true)),
             chain,
             offset,
         }
     }
 
+    /// The bytes its pair sets hold.
+    pub fn size(&self) -> u64 {
+        let sets = std::iter::once(&self.pairs).chain(&self.chain);
+        sets.map(|set| set.size()).sum()
+    }
+
     /// The pairs a deferred chain folds into (`_GetNormalized`).
-    pub fn normalized(&self) -> PathPairs {
+    pub fn normalized(&self) -> Arc<PathPairs> {
         if !self.deferred() {
             return self.pairs.clone();
         }
         let mut result = self.chain[self.chain.len() - 1].clone();
         for set in self.chain[..self.chain.len() - 1].iter().rev() {
-            result = set.compose(&result);
+            result = Arc::new(set.compose(&result));
         }
         result
     }
@@ -281,10 +341,10 @@ impl MapFunction {
         if self.has_root_identity() {
             return self.clone();
         }
-        let mut pairs = self.normalized();
+        let mut pairs = Arc::unwrap_or_clone(self.normalized());
         pairs.root_identity = true;
         MapFunction {
-            pairs,
+            pairs: Arc::new(pairs),
             chain: Vec::new(),
             offset: self.offset,
         }
@@ -293,7 +353,7 @@ impl MapFunction {
     /// The pairs with the root identity removed (payload inclusion skips an
     /// internal arc's root identity).
     pub fn without_root_identity(&self) -> PathPairs {
-        let mut pairs = self.normalized();
+        let mut pairs = Arc::unwrap_or_clone(self.normalized());
         pairs.root_identity = false;
         pairs
     }
@@ -301,8 +361,10 @@ impl MapFunction {
     /// The map the other way (the offset inverted too).
     pub fn inverse(&self) -> MapFunction {
         MapFunction {
-            pairs: self.pairs.inverted(),
-            chain: self.chain.iter().rev().map(PathPairs::inverted).collect(),
+            pairs: Arc::new(self.pairs.inverted()),
+            chain: (self.chain.iter().rev())
+                .map(|set| Arc::new(set.inverted()))
+                .collect(),
             offset: self.offset.inverse(),
         }
     }
@@ -348,7 +410,7 @@ impl MapFunction {
             }
         }
         MapFunction {
-            pairs: made,
+            pairs: Arc::new(made),
             chain: Vec::new(),
             offset: class_arc.offset,
         }
@@ -385,6 +447,27 @@ mod tests {
         // /Instance/A claimed by both the pair and the identity: the pair wins.
         assert_eq!(rooted.map(&p("/Model/A"), false), p("/Instance/A"));
         assert!(rooted.map(&p("/Instance/A"), false).is_empty());
+    }
+
+    #[test]
+    fn a_large_set_maps_through_its_index_as_a_small_one_does() {
+        // The same pairs, below and past the size an index is made at.
+        for count in [4, 40] {
+            let mut pairs = PathPairs::empty(true);
+            for k in 0..count {
+                pairs.push(p(&format!("/A{k}")), p(&format!("/B{k}")));
+            }
+            pairs.push(p("/A0/x"), p("/C"));
+            pairs.push(p("/Q"), p("/B1/y"));
+            // The deepest source wins, a property path too.
+            assert_eq!(pairs.map(&p("/A0/x/y.size"), false), p("/C/y.size"));
+            assert_eq!(pairs.map(&p("/A3/z"), false), p("/B3/z"));
+            assert_eq!(pairs.map(&p("/B3/z"), true), p("/A3/z"));
+            // The root identity, and a result a longer target claims.
+            assert_eq!(pairs.map(&p("/Other"), false), p("/Other"));
+            assert!(pairs.map(&p("/A1/y"), false).is_empty(), "{count}");
+            assert_eq!(pairs.map(&p("/"), false), p("/"));
+        }
     }
 
     #[test]
