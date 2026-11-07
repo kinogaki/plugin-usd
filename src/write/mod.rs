@@ -23,7 +23,7 @@ use crate::usd::scene::{Matrix4d, Node, NodeKind, Prototype, Scene, UpAxis as St
 use crate::usd::sdf::{Path, Token};
 use assets::Assets;
 use geometry::Shaping;
-use kinogaki_render_api::standard::Shape;
+use kinogaki_render_api::standard::LightShape;
 use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::geometry::image::ImageFile;
 use kinogaki_studio_api::geometry::{Domain, UpAxis, names as standard_names};

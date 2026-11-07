@@ -67,7 +67,7 @@ fn a_left_handed_mesh_winds_its_faces_the_other_way() {
 #[test]
 fn a_light_or_camera_out_of_range_is_left_out_and_said() {
     let scratch = Scratch::new("out-of-range");
-    let path = scratch.path().join("lights.usda");
+    let path = scratch.join("lights.usda");
     let text = r#"#usda 1.0
 def SphereLight "Dim"
 {
