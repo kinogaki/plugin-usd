@@ -1,10 +1,13 @@
 // Derived from OpenUSD (Copyright 2016 Pixar), licensed under the Tomorrow
 // Open Source Technology License 1.0, and rewritten in Rust; see NOTICE.
 //! The layers a composition opens, each once (`SdfLayer::FindOrOpen`'s
-//! registry), by identifier: a file path, or a layer inside a package
-//! (`/a/b.usdz[c.usdc]`), each read by its signature whatever its
-//! extension says. A layer that cannot be read is remembered as failed, with
-//! the reason.
+//! registry, which finds a layer by its identifier and by its resolved
+//! path), by identity: a file on disk by its canonical path, which
+//! [`Named`] gives, however an identifier spells it (a link, another case
+//! on a disk that ignores case); a layer inside a package
+//! (`/a/b.usdz[c.usdc]`) by its package's identity and its path in it.
+//! Each is read by its signature whatever its extension says. A layer that
+//! cannot be read is remembered as failed, with the reason.
 //!
 //! Files given in memory (the file read, an embedded file, which has no
 //! path) stand in for files of their name. Every other file is reached on
@@ -36,9 +39,13 @@ struct Entry {
 /// Every layer a composition has opened.
 pub struct Layers {
     entries: Vec<Entry>,
-    by_identifier: HashMap<String, usize>,
+    /// Each layer by its identity.
+    by_identity: HashMap<String, usize>,
+    /// Each identifier asked for, by what it names ([`Layers::identity`]).
+    identities: HashMap<String, String>,
     /// Files given in memory, by their identifier.
     held: HashMap<String, Bytes>,
+    /// Each package by its identity.
     packages: HashMap<String, Package>,
     /// The files on disk it may read; none reads nothing from disk.
     disk: Option<Arc<Named>>,
@@ -51,7 +58,8 @@ impl Layers {
     pub fn new(disk: Option<Arc<Named>>, budget: ReadBudget) -> Layers {
         Layers {
             entries: Vec::new(),
-            by_identifier: HashMap::new(),
+            by_identity: HashMap::new(),
+            identities: HashMap::new(),
             held: HashMap::new(),
             packages: HashMap::new(),
             disk,
@@ -90,15 +98,16 @@ impl Layers {
     /// Why the layer `identifier` names could not be read ("" when it was
     /// read, or never tried).
     pub fn problem(&self, identifier: &str) -> &str {
-        self.by_identifier
-            .get(identifier)
+        (self.identities.get(identifier))
+            .and_then(|identity| self.by_identity.get(identity))
             .map_or("", |&at| self.entries[at].problem.as_str())
     }
 
     /// The layer `identifier` names, opened now if new; none when it cannot
     /// be read.
     pub fn find_or_open(&mut self, identifier: &str) -> Result<Option<usize>> {
-        if let Some(&at) = self.by_identifier.get(identifier) {
+        let identity = self.identity(identifier);
+        if let Some(&at) = self.by_identity.get(&identity) {
             return Ok(self.entries[at].layer.is_some().then_some(at));
         }
         if self.entries.len() >= MOST_LAYERS {
@@ -115,7 +124,7 @@ impl Layers {
             layer,
             problem,
         });
-        self.by_identifier.insert(identifier.to_owned(), at);
+        self.by_identity.insert(identity, at);
         Ok(opened.then_some(at))
     }
 
@@ -127,8 +136,26 @@ impl Layers {
             layer: Some(Arc::new(LayerData::new())),
             problem: String::new(),
         });
-        self.by_identifier.insert(identifier.to_owned(), at);
+        (self.identities).insert(identifier.to_owned(), identifier.to_owned());
+        self.by_identity.insert(identifier.to_owned(), at);
         at
+    }
+
+    /// What `identifier` names, one name for a file however it is spelled:
+    /// a file on disk its canonical path, a package's entry its package's
+    /// identity and its path in it; a file held, or one no disk reaches,
+    /// its identifier. Found once an identifier.
+    fn identity(&mut self, identifier: &str) -> String {
+        if let Some(known) = self.identities.get(identifier) {
+            return known.clone();
+        }
+        let identity = match assets::package_split(identifier) {
+            Some((outer, inner)) => format!("{}[{inner}]", self.identity(outer)),
+            None => (self.on_disk(identifier))
+                .map_or_else(|| identifier.to_owned(), |p| p.display().to_string()),
+        };
+        (self.identities).insert(identifier.to_owned(), identity.clone());
+        identity
     }
 
     /// The layer's metadata field `name` (on its pseudo-root).
@@ -195,18 +222,20 @@ impl Layers {
         Ok(Bytes::from(disk.read(&path)?))
     }
 
-    /// The package at `identifier` (an outer file, a `.usdz`), read once.
+    /// The package at `identifier` (an outer file, a `.usdz`), read once
+    /// however it is spelled.
     fn package(&mut self, identifier: &str) -> Result<&Package> {
-        if !self.packages.contains_key(identifier) {
+        let identity = self.identity(identifier);
+        if !self.packages.contains_key(&identity) {
             if !is_package(identifier) {
                 return Err(Error::invalid(format!(
                     "{identifier} is no usdz: only usdz files hold packaged files"
                 )));
             }
             let package = Package::open(self.file_bytes(identifier)?)?;
-            self.packages.insert(identifier.to_owned(), package);
+            self.packages.insert(identity.clone(), package);
         }
-        Ok(&self.packages[identifier])
+        Ok(&self.packages[&identity])
     }
 
     /// Read the layer an identifier names.

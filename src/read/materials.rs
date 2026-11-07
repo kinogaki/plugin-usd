@@ -3,6 +3,12 @@
 //! of the nodes its shaders name, node graphs and interface inputs looked
 //! through, each texture an Image node wired into the input naming it.
 //!
+//! **Lengths and sides.** A material's lengths (glTF PBR's thickness, a
+//! transmission depth) are in the stage's units and move into the
+//! project's, as its geometry does. Its Double Sided is what it says
+//! (`kinogaki:doubleSided`, which Kinogaki writes), else what the meshes
+//! showing it say: double sided unless a single-sided one shows it.
+//!
 //! **Which network a material keeps** (D23): the first it holds of an
 //! engine's own (`kinogaki`), MaterialX's (`mtlx`) and USD Preview
 //! Surface's; one holding an engine's keeps the next as its standard form,
@@ -11,7 +17,8 @@
 use super::files::Files;
 use crate::names::{self, Unique, file_name};
 use crate::shading::{
-    self, KINOGAKI, LINEAR_REC709, MTLX, NAME_KEY, OPACITY_MODES, UNIVERSAL, terminal,
+    self, DOUBLE_SIDED_KEY, KINOGAKI, LINEAR_REC709, MTLX, NAME_KEY, OPACITY_MODES, UNIVERSAL,
+    terminal,
 };
 use crate::usd::sdf::{Token, Value as Usd};
 use crate::usd::shade::{Material, Port, ShadeKind, Source};
@@ -33,12 +40,15 @@ const CONTEXTS: [&str; 3] = [KINOGAKI, MTLX, UNIVERSAL];
 /// through.
 const MOST_HOPS: usize = 64;
 
-/// `material` as the material a file brings, keyed by its prim path.
+/// `material` as the material a file brings, keyed by its prim path: its
+/// lengths times `scale` (the project's units a stage unit), double sided
+/// as it says, else unless a single-sided mesh shows it (`single`).
 pub(super) fn material(
     material: &Material,
     files: &mut Files<'_>,
     colors: &dyn ColorService,
     warnings: &mut Vec<String>,
+    (scale, single): (f64, bool),
 ) -> ImportedMaterial {
     let key = material.path.to_string();
     let name = match material.custom_data.get(NAME_KEY).and_then(Usd::as_token) {
@@ -67,20 +77,30 @@ pub(super) fn material(
         warnings,
         said: BTreeSet::new(),
     };
-    let inside = match held.first() {
+    let mut inside = match held.first() {
         Some(context) => reader.network(context, true),
         None => NetworkSeed::default(),
     };
-    let standard = match held[..] {
+    let mut standard = match held[..] {
         [KINOGAKI, next, ..] => Some(reader.network(next, false)),
         _ => None,
     };
+    let mut unconverted = inside.scale_lengths(scale);
+    if let Some(standard) = &mut standard {
+        unconverted += standard.scale_lengths(scale);
+    }
+    if unconverted > 0 {
+        reader.say(format!(
+            "{unconverted} lengths driven by textures keep the stage's units"
+        ));
+    }
+    let said = material.custom_data.get(DOUBLE_SIDED_KEY);
     ImportedMaterial {
         key,
         name,
         inside,
         standard,
-        double_sided: true,
+        double_sided: said.and_then(Usd::as_bool).unwrap_or(!single),
     }
 }
 
@@ -260,9 +280,13 @@ impl<'m> Reader<'m, '_, '_> {
             return None;
         };
         let library = kinogaki_mtlx::library();
+        // A node of Kinogaki's definition is written as the MaterialX one it
+        // inherits, its own inputs beside: they say which it is.
+        let inputs = shader.inputs.iter().map(|p| p.name.as_str());
         let signature = match context {
             UNIVERSAL => shading::preview_signature(id),
-            _ => library.def(id).map(|def| def.name.as_str()),
+            _ => (library.def(id))
+                .map(|def| library.holding(def, inputs).unwrap_or(def).name.as_str()),
         };
         if let Some(signature) = signature {
             let def = library.def(signature)?.clone();

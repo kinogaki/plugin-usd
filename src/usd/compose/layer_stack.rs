@@ -20,7 +20,7 @@ use super::Problems;
 use super::assets;
 use super::expressions::{evaluate_to_string, is_expression};
 use super::layers::Layers;
-use super::relocations::{Relocate, compute_relocations};
+use super::relocations::{Relocates, compute_relocations};
 use crate::usd::error::Result;
 use crate::usd::sdf::{Dictionary, LayerOffset, Token, Value, field};
 use std::collections::HashSet;
@@ -39,7 +39,7 @@ pub struct LayerStack {
     /// The stack's time codes per second.
     pub time_codes_per_second: f64,
     /// The stack's relocations.
-    pub relocates: Vec<Relocate>,
+    pub relocates: Relocates,
     /// The expression variables.
     pub variables: Dictionary,
     /// The stack that last changed the variables (none: the root stack).
@@ -56,20 +56,12 @@ impl LayerStack {
 
     /// The incremental source relocated to `target`, if any.
     pub fn relocated_to(&self, target: &crate::usd::sdf::Path) -> Option<&crate::usd::sdf::Path> {
-        if target.is_empty() {
-            return None;
-        }
-        self.relocates
-            .iter()
-            .find(|relocate| relocate.target == *target)
-            .map(|relocate| &relocate.source)
+        self.relocates.to_target(target).map(|r| &r.source)
     }
 
     /// Whether `source` is relocated (incrementally).
     pub fn relocates_source(&self, source: &crate::usd::sdf::Path) -> bool {
-        self.relocates
-            .iter()
-            .any(|relocate| relocate.source == *source)
+        self.relocates.of_source(source).is_some()
     }
 }
 
@@ -106,7 +98,7 @@ impl Stacks {
             layers: Vec::new(),
             offsets: Vec::new(),
             time_codes_per_second: layers.time_codes_per_second(root),
-            relocates: Vec::new(),
+            relocates: Relocates::default(),
             variables: Dictionary::new(),
             source: None,
             overrides,

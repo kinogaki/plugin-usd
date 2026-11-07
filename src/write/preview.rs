@@ -9,6 +9,8 @@
 //! the same file, and the arithmetic the translation left between it and
 //! the input (a base color scaled by its weight) is its `scale` and `bias`,
 //! found by evaluating that arithmetic with the texture at zero and at one.
+//! A texture of Kinogaki's definitions reads as the MaterialX one it
+//! inherits (glTF's sampler has no USD UV Texture form).
 //! A normal map carries over into `normal`. Anything else feeding the
 //! surface (a procedural, arithmetic over two textures) leaves its input at
 //! its default, said.
@@ -209,10 +211,11 @@ fn texture_into(seed: &NetworkSeed, node: usize, input: &str) -> Option<Texture>
 }
 
 /// The texture output `output` of node `from` is, looking through the
-/// nodes that pick its channels.
+/// nodes that pick its channels; a texture of Kinogaki's (glTF's with its
+/// whole sampler) as the MaterialX one it inherits.
 fn texture(seed: &NetworkSeed, from: usize, output: &str) -> Option<Texture> {
     let node = &seed.nodes[from];
-    let def = definition(node)?;
+    let def = kinogaki_mtlx::library().in_materialx(definition(node)?)?;
     let number = |name: &str| -> Option<Vec<f64>> {
         match node.parameters.get(name) {
             Some(Value::Number(n)) => Some(vec![*n]),

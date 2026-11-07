@@ -9,12 +9,18 @@
 //!
 //! An Image node is the file its texture node's input names: an asset of
 //! the scene, packed in a usdz or written beside a layer, with its Color as
-//! the input's `colorSpace` (USD UV Texture's `sourceColorSpace` too).
+//! the input's `colorSpace` (USD UV Texture's `sourceColorSpace` too). A
+//! node of Kinogaki's definitions is the MaterialX definition it inherits,
+//! its own inputs beside, every one, so other applications know each
+//! shader's `info:id` and Studio reads it back as it was. The material's
+//! name and Double Sided are its `customData` (`kinogaki:name`,
+//! `kinogaki:doubleSided`).
 use super::assets::Assets;
 use super::preview;
 use crate::names::{self, Unique};
 use crate::shading::{
-    self, KINOGAKI, LINEAR_REC709, MTLX, NAME_KEY, OPACITY_MODES, UNIVERSAL, terminal,
+    self, DOUBLE_SIDED_KEY, KINOGAKI, LINEAR_REC709, MTLX, NAME_KEY, OPACITY_MODES, UNIVERSAL,
+    terminal,
 };
 use crate::usd::sdf::{Path, Token, Value as Usd};
 use crate::usd::shade::{Material, Port, ShadeKind, ShadeNode, Source};
@@ -47,6 +53,29 @@ pub(super) fn definition(node: &NewNode) -> Option<&'static Arc<NodeDef>> {
     }
 }
 
+/// The inputs of Kinogaki's definition `def` that the MaterialX one it is
+/// written as ([`in_materialx`](kinogaki_mtlx::Library::in_materialx))
+/// lacks or holds another default of, at their defaults: a node writes them
+/// all, held or not, so another application reads what Studio does and a
+/// reader knows it for `def` again
+/// ([`holding`](kinogaki_mtlx::Library::holding)).
+fn own_inputs(def: &Arc<NodeDef>) -> Vec<(String, Value)> {
+    let library = kinogaki_mtlx::library();
+    let (Some(written), Some(made)) = (
+        library.in_materialx(def).filter(|m| m.name != def.name),
+        kinogaki_render_api::material::mtlx::def(&def.name),
+    ) else {
+        return Vec::new();
+    };
+    (def.inputs.iter())
+        .filter(|p| written.input(&p.name).is_none_or(|w| w.value != p.value))
+        .filter_map(|p| {
+            let default = made.find_input(&p.name)?.value()?;
+            Some((p.name.clone(), default.value.clone()))
+        })
+        .collect()
+}
+
 /// What `seed` is made of.
 pub(super) fn family(seed: &NetworkSeed) -> Family {
     let shading = seed.nodes.iter().filter(|n| n.node_type != IMAGE_NODE);
@@ -73,6 +102,10 @@ pub(super) fn material(
     let mut out = Material::new(path);
     out.custom_data
         .insert(Token::new(NAME_KEY), Usd::Token(Token::new(&material.name)));
+    out.custom_data.insert(
+        Token::new(DOUBLE_SIDED_KEY),
+        Usd::Bool(material.double_sided),
+    );
     let mut writer = Network {
         material: &mut out,
         names: Unique::default(),
@@ -150,7 +183,11 @@ impl Network<'_> {
                         Error::invalid(format!("{} is no USD Preview Surface node", def.name))
                     })?
                     .to_owned(),
-                (Some(def), _) => def.name.clone(),
+                (Some(def), _) => kinogaki_mtlx::library()
+                    .in_materialx(def)
+                    .unwrap_or(def)
+                    .name
+                    .clone(),
                 (None, _) => node.node_type.to_string(),
             };
             let label = node
@@ -176,7 +213,9 @@ impl Network<'_> {
             let preview = (context == UNIVERSAL)
                 .then(|| def.and_then(|d| shading::preview_id(&d.name)))
                 .flatten();
-            for (input, value) in &node.parameters {
+            let own = def.map(own_inputs).unwrap_or_default();
+            let unheld = own.iter().filter(|(i, _)| !node.parameters.contains_key(i));
+            for (input, value) in node.parameters.iter().chain(unheld.map(|(i, v)| (i, v))) {
                 if input == SIGNATURE {
                     continue;
                 }

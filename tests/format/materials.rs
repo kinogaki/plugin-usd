@@ -3,13 +3,19 @@
 //! USD Preview Surface come back as they were; every network a material
 //! has is in the file (a usdz too: the owner's ruling), with a USD Preview
 //! Surface made for other applications; a usdz's textures read back
-//! embedded, as ranges of the package. Apple's `usdchecker --arkit` (a
-//! local oracle) passes a usdz of MaterialX and USD Preview Surface
-//! materials.
+//! embedded, as ranges of the package. Kinogaki's definitions (a glTF
+//! texture with its whole sampler) travel as the MaterialX ones they
+//! inherit and come back as themselves; a material keeps its sides
+//! whatever shows it, and its lengths move into the project's units.
+//! Apple's `usdchecker --arkit` (a local oracle) passes a usdz of MaterialX,
+//! glTF and USD Preview Surface materials.
 use crate::support::{
     Scratch, materials, metres, read_file, read_with, shape, square, stage, write_file,
 };
 use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageColor, ImageFile, ImageSource};
+use kinogaki_studio_api::geometry::{
+    Attribute, Attributes, Domain, Geometry, Primitives, Text, names,
+};
 use kinogaki_studio_api::image_files::{IMAGE_NODE, image_node, image_source};
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
 use kinogaki_studio_api::standard::{self, ImportedMaterial, Materials};
@@ -310,6 +316,188 @@ fn a_usdz_texture_reads_back_embedded_as_a_range_of_the_package() {
     );
 }
 
+/// A glTF material as glTF's reader makes one: glTF PBR whose base color is
+/// a texture of Kinogaki's (glTF's whole sampler: a minification filter, an
+/// undefined magnification one), and an occlusion texture holding no
+/// filter of its own; a volume's lengths.
+fn gltf(file: &EmbeddedFile) -> ImportedMaterial {
+    let mut inside = NetworkSeed::default();
+    let surface = inside.node(
+        NewNode::materialx("ND_gltf_pbr_surfaceshader")
+            .unwrap()
+            .named("Surface")
+            .with("thickness", 2.0)
+            .with("attenuation_distance", 0.5)
+            .displayed(),
+    );
+    let base = inside.node(
+        NewNode::materialx("ND_kinogaki_gltf_colorimage")
+            .unwrap()
+            .named("Base")
+            .with("filtertype", Value::Choice(Arc::from("")))
+            .with(
+                "minfilter",
+                Value::Choice(Arc::from("nearest_mipmap_linear")),
+            ),
+    );
+    let occlusion = inside.node(
+        NewNode::materialx("ND_kinogaki_gltf_image_float")
+            .unwrap()
+            .named("Occlusion"),
+    );
+    // Kinogaki's color4 image places in glTF's order, MaterialX's in the
+    // other by default.
+    inside.node(
+        NewNode::materialx("ND_kinogaki_gltf_image_color4")
+            .unwrap()
+            .named("Spare"),
+    );
+    let source = ImageSource::new(ImageFile::Embedded(file.clone()), ImageColor::Auto);
+    let image = inside.node(image_node::reading(&source).named("box"));
+    inside.wire(image, image_node::IMAGE, base, "file");
+    inside.wire(image, image_node::IMAGE, occlusion, "file");
+    inside.wire(base, "outcolor", surface, "base_color");
+    inside.wire(occlusion, "out", surface, "occlusion");
+    ImportedMaterial {
+        key: "/Looks/Box".into(),
+        name: "Box".into(),
+        inside,
+        standard: None,
+        double_sided: false,
+    }
+}
+
+#[test]
+fn kinogakis_textures_travel_as_materialx_ones_and_come_back_as_themselves() {
+    let dir = Scratch::new("gltf");
+    let path = dir.path().join("box.usdz");
+    let file = EmbeddedFile::new("box.png", vec![1, 2, 3, 4]);
+    let written = gltf(&file);
+    write_file(&path, &items(vec![written.clone()]), metres());
+    let mut stage = stage(&path);
+    let scene = scene::read(&mut stage, &ReadOptions::default()).unwrap();
+    let material = &scene.materials[0];
+    // Other applications know every shader's id: Kinogaki's textures are
+    // MaterialX's glTF ones, their sampler's filters beside.
+    let ids: Vec<&str> = (material.nodes.iter())
+        .filter_map(|n| n.id().map(|id| id.as_str()))
+        .collect();
+    assert!(ids.contains(&"ND_gltf_colorimage"), "{ids:?}");
+    assert!(ids.contains(&"ND_gltf_image_float_float_1_0"), "{ids:?}");
+    assert!(!ids.iter().any(|id| id.contains("kinogaki")), "{ids:?}");
+    let mtlx = material.surface("mtlx").unwrap();
+    let base = &material.nodes[mtlx.input("base_color").unwrap().sources[0].node.unwrap()];
+    assert!(base.input("minfilter").is_some());
+    let spare = (material.nodes.iter())
+        .find(|n| n.path.name() == "Spare")
+        .unwrap();
+    let order = spare.input("operationorder").and_then(|p| p.value.clone());
+    assert_eq!(order, Some(kinogaki_usd::usd::sdf::Value::Int(0)));
+    // Their USD Preview Surface shows the base color's texture.
+    let preview = material.surface("").unwrap();
+    let diffuse = preview
+        .input("diffuseColor")
+        .expect("a textured diffuse color");
+    let texture = &material.nodes[diffuse.sources[0].node.unwrap()];
+    assert_eq!(texture.id().unwrap().as_str(), "UsdUVTexture");
+    // Read back, each texture is Kinogaki's again, holding what it held
+    // and, the occlusion, its filter at its default.
+    let read = read_file(&path, metres(), false);
+    let back = &materials(&read).materials[0];
+    let mut expected = written.inside.clone();
+    let none = Value::Choice(Arc::from(""));
+    expected.nodes[2] = (expected.nodes[2].clone()).with("minfilter", none.clone());
+    expected.nodes[3] = (expected.nodes[3].clone())
+        .with("minfilter", none)
+        .with("operationorder", Value::Integer(0));
+    assert_eq!(shape(&back.inside), shape(&expected));
+}
+
+/// Two triangles, the first showing material `a`, the second `b`.
+fn two_faces(a: &str, b: &str) -> Geometry {
+    let positions = vec![
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
+    let faces = Primitives::of_polygons(4, vec![0, 3, 6].into(), vec![0, 1, 2, 0, 2, 3].into());
+    let material = Attribute::text(Text::from_strs([a, b]));
+    let attributes = Attributes::new().with(Domain::Primitive, names::MATERIAL, material);
+    Geometry::new(positions.into(), faces.unwrap(), attributes.unwrap()).unwrap()
+}
+
+#[test]
+fn a_material_keeps_its_sides_whatever_shows_it() {
+    let dir = Scratch::new("sides");
+    let path = dir.path().join("sides.usda");
+    let file = EmbeddedFile::new("box.png", vec![1, 2, 3, 4]);
+    // A single-sided material no mesh shows (one of a glTF's variants), and
+    // a double-sided one on a mesh beside a single-sided one.
+    let spare = ImportedMaterial {
+        key: "/Looks/Spare".into(),
+        name: "Spare".into(),
+        ..gltf(&file)
+    };
+    let double = ImportedMaterial {
+        double_sided: true,
+        ..wood(&file)
+    };
+    let single = ImportedMaterial {
+        key: "/Looks/Single".into(),
+        name: "Single".into(),
+        ..wood(&file)
+    };
+    let shared = two_faces(&double.key, &single.key);
+    let looks = Materials {
+        materials: vec![spare, double, single],
+        images: Vec::new(),
+    };
+    let items = vec![
+        FileItem::top("Looks", standard::materials().wrap(looks)),
+        FileItem::top("Shared", standard::geometry().wrap(shared)),
+    ];
+    write_file(&path, &items, metres());
+    let read = read_file(&path, metres(), false);
+    let mut sides: Vec<(&str, bool)> = (materials(&read).materials.iter())
+        .map(|m| (m.name.as_str(), m.double_sided))
+        .collect();
+    sides.sort();
+    assert_eq!(sides, [("Single", false), ("Spare", false), ("Wood", true)]);
+}
+
+#[test]
+fn a_materials_lengths_move_into_the_projects_units() {
+    use kinogaki_studio_api::geometry::{Units, UpAxis};
+    let dir = Scratch::new("lengths");
+    let path = dir.path().join("glass.usda");
+    let file = EmbeddedFile::new("box.png", vec![1, 2, 3, 4]);
+    let millimetres = Units::new(0.001, UpAxis::Y).unwrap();
+    let centimetres = Units::new(0.01, UpAxis::Y).unwrap();
+    write_file(&path, &items(vec![gltf(&file)]), millimetres);
+    let read = read_file(&path, centimetres, false);
+    let back = &materials(&read).materials[0];
+    let surface = back.inside.nodes.iter().find(|n| n.display).unwrap();
+    // 2 mm and 0.5 mm, in centimetres.
+    let held = |name: &str| match surface.parameters.get(name) {
+        Some(Value::Number(n)) => *n,
+        other => panic!("{name}: {other:?}"),
+    };
+    assert!(
+        (held("thickness") - 0.2).abs() < 1e-9,
+        "{}",
+        held("thickness")
+    );
+    assert!((held("attenuation_distance") - 0.05).abs() < 1e-9);
+    // In the units it was written in, it reads as it was.
+    let read = read_file(&path, millimetres, false);
+    let back = &materials(&read).materials[0];
+    assert_eq!(
+        shape(&back.inside).0["Surface"],
+        shape(&gltf(&file).inside).0["Surface"]
+    );
+}
+
 #[test]
 #[ignore = "hand: Apple's usdchecker, a local oracle"]
 fn hand_run_usdchecker_arkit_passes_materialx_and_preview_surface_usdz() {
@@ -334,7 +522,8 @@ fn hand_run_usdchecker_arkit_passes_materialx_and_preview_surface_usdz() {
             *node = image_node::reading(&packed).named("leaf");
         }
     }
-    write_file(&path, &items(vec![wood, leaf]), metres());
+    let gltf = gltf(&EmbeddedFile::new("box.png", png.to_vec()));
+    write_file(&path, &items(vec![wood, leaf, gltf]), metres());
     let checked = std::process::Command::new("usdchecker")
         .arg("--arkit")
         .arg(&path)

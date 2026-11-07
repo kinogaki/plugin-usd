@@ -6,8 +6,9 @@
 
 use super::Reader;
 use crate::usd::error::Result;
-use crate::usd::sdf::Path;
 use crate::usd::sdf::identifier::continue_len;
+use crate::usd::sdf::{Path, has_duplicates};
+use std::hash::Hash;
 
 /// Display unit names (`SdfGetUnitFromName` over `_SDF_UNITS`).
 const UNIT_NAMES: [&str; 13] = [
@@ -101,12 +102,10 @@ impl Reader<'_> {
     }
 
     /// No item may appear twice in a list op part.
-    pub(super) fn check_unique<T: PartialEq>(&self, items: &[T]) -> Result<()> {
-        for (index, item) in items.iter().enumerate() {
-            if items[..index].contains(item) {
-                return Err(self.error("duplicate items in a list op"));
-            }
+    pub(super) fn check_unique<T: PartialEq + Hash>(&self, items: &[T]) -> Result<()> {
+        match has_duplicates(items) {
+            true => Err(self.error("duplicate items in a list op")),
+            false => Ok(()),
         }
-        Ok(())
     }
 }

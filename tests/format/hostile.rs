@@ -304,6 +304,112 @@ fn sublayers_named_over_and_over_stack_once() {
     assert!(read.items.iter().any(|i| i.name == "Deep"));
 }
 
+/// A layer of a cube `Many` whose `field` list op prepends `item(k)` for
+/// each `k` of `count`, and `targets` prims `P<k>`.
+fn listing(field: &str, count: usize, item: impl Fn(usize) -> String, targets: usize) -> String {
+    let items: Vec<String> = (0..count).map(item).collect();
+    let mut text = format!(
+        "#usda 1.0\ndef Cube \"Many\" (\n    prepend {field} = [{}]\n)\n{{\n}}\n",
+        items.join(", ")
+    );
+    for k in 0..targets {
+        text.push_str(&format!("def Xform \"P{k}\"\n{{\n}}\n"));
+    }
+    text
+}
+
+#[test]
+fn list_ops_of_many_items_apply_in_linear_time() {
+    // 300,000 API schemas on a light (which looks for its shaping): each
+    // prepended item once looked through all.
+    let schemas = listing("apiSchemas", 300_000, |k| format!("\"S{k}\""), 0);
+    let schemas = schemas.replacen("def Cube", "def SphereLight", 1);
+    let read = read_bytes("schemas.usda", schemas.as_bytes(), small()).unwrap();
+    assert!(read.items.iter().any(|i| i.name == "Many"));
+    // 150,000 references, each with custom data (a dictionary of floats,
+    // which can't be hashed) and an offset, into a layer that isn't there.
+    let references = listing(
+        "references",
+        150_000,
+        |k| format!("@./gone.usda@</P{k}> (offset = {k}; customData = {{ double weight = 0.5 }})"),
+        0,
+    );
+    let read = read_bytes("references.usda", references.as_bytes(), small()).unwrap();
+    assert!(read.items.iter().any(|i| i.name == "Many"));
+}
+
+#[test]
+fn many_relocates_are_checked_in_linear_time() {
+    // 100,000 relocates, each checked against the others: the ones that
+    // conflict (a target that is another's source, two sources with one
+    // target, a source under another's) go, the rest stay.
+    let count = 100_000;
+    let mut pairs: Vec<String> = (0..count)
+        .map(|k| format!("</Root/A{k}>: </Root/B{k}>"))
+        .collect();
+    pairs.push("</Root/B0>: </Root/C0>".into());
+    pairs.push("</Root/D0>: </Root/B1>".into());
+    pairs.push("</Root/A2/E>: </Root/F>".into());
+    let text = format!(
+        "#usda 1.0\n(\n    relocates = {{\n        {}\n    }}\n)\ndef Cube \"Root\"\n{{\n}}\n",
+        pairs.join(",\n        ")
+    );
+    let read = read_bytes("relocates.usda", text.as_bytes(), small()).unwrap();
+    assert!(read.items.iter().any(|i| i.name == "Root"));
+    // A0 → B0 and B0 → C0, A1 → B1 and D0 → B1, and A2/E under A2 go.
+    let said = said(&read);
+    assert!(said.contains("Conflicting relocation (5 times)"), "{said}");
+}
+
+#[test]
+fn a_prim_order_of_many_names_applies_in_linear_time() {
+    // 100,000 children a reference brings, ordered last to first.
+    let count = 100_000;
+    let order: Vec<String> = (0..count).rev().map(|k| format!("\"C{k}\"")).collect();
+    let mut text = format!(
+        "#usda 1.0\ndef Cube \"Root\" (\n    references = </Model>\n)\n{{\n    reorder nameChildren = [{}]\n}}\ndef \"Model\"\n{{\n",
+        order.join(", ")
+    );
+    for k in 0..count {
+        text.push_str(&format!("    def \"C{k}\"\n    {{\n    }}\n"));
+    }
+    text.push_str("}\n");
+    let read = read_bytes("ordered.usda", text.as_bytes(), small()).unwrap();
+    assert!(read.items.iter().any(|i| i.name == "Root"));
+}
+
+#[test]
+fn a_layer_named_many_ways_is_read_once() {
+    let dir = Scratch::new("hostile-spellings");
+    // A layer of 64 KiB, and 64 links naming it.
+    let mut layer = String::from("#usda 1.0\ndef Cube \"Big\"\n{\n");
+    while layer.len() < 64 << 10 {
+        layer.push_str("    custom double padding = 0.000000000000000000000000000001\n");
+    }
+    layer.push_str("}\n");
+    std::fs::write(dir.path().join("big.usda"), &layer).unwrap();
+    let links: Vec<String> = (0..64).map(|k| format!("@./link{k}.usda@")).collect();
+    for k in 0..64 {
+        std::os::unix::fs::symlink("big.usda", dir.path().join(format!("link{k}.usda"))).unwrap();
+    }
+    let root = format!("#usda 1.0\n(\n    subLayers = [{}]\n)\n", links.join(", "));
+    std::fs::write(dir.path().join("root.usda"), root).unwrap();
+    // The files read may take the layer twice over, not 64 times.
+    let limits = ReadLimits {
+        bytes: 2 * layer.len() as u64,
+        ..small()
+    };
+    let (read, _) = read_hostile(
+        &Usd,
+        &Input::file(&dir.path().join("root.usda")),
+        &Usd.options(),
+        limits,
+    );
+    let read = read.unwrap();
+    assert!(read.items.iter().any(|i| i.name == "Big"));
+    assert!(read.warnings.is_empty(), "{}", said(&read));
+}
+
 #[test]
 fn many_alike_names_export_in_linear_time() {
     use kinogaki_studio_api::{FileItem, Xform};

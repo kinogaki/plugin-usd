@@ -274,3 +274,65 @@ fn mutated_layers_never_panic() {
         }
     }
 }
+
+#[test]
+fn relocates_rename_move_and_bring_children() {
+    // Root references Model: its A is renamed C, its B moved under Other,
+    // and Other's own D moved here as E.
+    let layer = r#"#usda 1.0
+(
+    relocates = {
+        </Root/A>: </Root/C>,
+        </Root/B>: </Other/B>,
+        </Other/D>: </Root/E>
+    }
+)
+def Xform "Root" (
+    references = </Model>
+)
+{
+}
+def Xform "Other" (
+    references = </Spare>
+)
+{
+}
+def Xform "Model"
+{
+    def Xform "Z" {}
+    def Xform "A" {}
+    def Xform "B" {}
+}
+def Xform "Spare"
+{
+    def Xform "D" {}
+}
+"#;
+    let mut stage = crate::common::stage_named("relocated.usda", layer.as_bytes());
+    let names = |stage: &mut kinogaki_usd::usd::Stage, path: &str| -> Vec<String> {
+        let names = stage.child_names(&p(path)).unwrap();
+        names.iter().map(|n| n.as_str().to_owned()).collect()
+    };
+    assert_eq!(names(&mut stage, "/Root"), ["Z", "C", "E"]);
+    assert_eq!(names(&mut stage, "/Other"), ["B"]);
+}
+
+#[test]
+fn a_prim_order_takes_the_runs_its_names_start() {
+    let layer = r#"#usda 1.0
+def Xform "Root"
+{
+    reorder nameChildren = ["d", "b"]
+    def Xform "a" {}
+    def Xform "b" {}
+    def Xform "c" {}
+    def Xform "d" {}
+    def Xform "e" {}
+}
+"#;
+    let mut stage = crate::common::stage_named("ordered.usda", layer.as_bytes());
+    let names: Vec<String> = (stage.child_names(&p("/Root")).unwrap().iter())
+        .map(|n| n.as_str().to_owned())
+        .collect();
+    assert_eq!(names, ["a", "d", "e", "b", "c"]);
+}

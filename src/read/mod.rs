@@ -30,9 +30,7 @@ use kinogaki_studio_api::format::files::Named;
 use kinogaki_studio_api::geometry::image::ImageSource;
 use kinogaki_studio_api::geometry::{Attribute, Attributes, Column, Domain, Text, Xform, names};
 use kinogaki_studio_api::image_files::OP;
-use kinogaki_studio_api::standard::{
-    self, ImportedImage, ImportedMaterial, Instances, MAX_DEPTH, Materials,
-};
+use kinogaki_studio_api::standard::{self, ImportedImage, Instances, MAX_DEPTH, Materials};
 use kinogaki_studio_api::{
     Data, Diagnostic, Error, FileItem, FormatOptions, Imported, Input, Reading,
 };
@@ -74,11 +72,9 @@ pub(crate) fn read(
     let single = single_sided(&scene);
     for (k, material) in scene.materials.iter().enumerate() {
         reading.check()?;
-        let read = materials::material(material, &mut files, reading.colors, &mut warnings);
-        looks.materials.push(ImportedMaterial {
-            double_sided: !single[k],
-            ..read
-        });
+        let sides = (space.scale, single[k]);
+        let read = materials::material(material, &mut files, reading.colors, &mut warnings, sides);
+        looks.materials.push(read);
     }
     let mut walk = Walk {
         scene: &scene,

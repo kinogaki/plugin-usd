@@ -19,6 +19,7 @@ use super::map::{MapFunction, PathPairs, namespace_depth};
 use super::tasks::Indexer;
 use crate::usd::error::Result;
 use crate::usd::sdf::{Path, Value, field};
+use std::collections::{HashMap, HashSet};
 
 /// One relocation: `source` moves to `target` (empty: to nowhere).
 #[derive(Clone, Debug, PartialEq)]
@@ -31,8 +32,63 @@ pub struct Relocate {
     pub origin: Path,
 }
 
+/// A layer stack's relocations, found by source and by target: each source
+/// and each target (but the empty one) is one relocation's.
+#[derive(Clone, Debug, Default)]
+pub struct Relocates {
+    all: Vec<Relocate>,
+    by_source: HashMap<Path, usize>,
+    by_target: HashMap<Path, usize>,
+}
+
+impl Relocates {
+    fn new(all: Vec<Relocate>) -> Relocates {
+        let at = |path: fn(&Relocate) -> &Path| {
+            (all.iter().enumerate())
+                .filter(|(_, r)| !path(r).is_empty())
+                .map(|(k, r)| (path(r).clone(), k))
+                .collect()
+        };
+        Relocates {
+            by_source: at(|r| &r.source),
+            by_target: at(|r| &r.target),
+            all,
+        }
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.all.is_empty()
+    }
+
+    /// Each, strongest layer's first for a source.
+    pub fn iter(&self) -> std::slice::Iter<'_, Relocate> {
+        self.all.iter()
+    }
+
+    /// The one moving `source`.
+    pub fn of_source(&self, source: &Path) -> Option<&Relocate> {
+        self.by_source.get(source).map(|&k| &self.all[k])
+    }
+
+    /// The one moving something to `target`.
+    pub fn to_target(&self, target: &Path) -> Option<&Relocate> {
+        self.by_target.get(target).map(|&k| &self.all[k])
+    }
+}
+
+impl<'a> IntoIterator for &'a Relocates {
+    type Item = &'a Relocate;
+    type IntoIter = std::slice::Iter<'a, Relocate>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Build `stack.relocates` from its layers.
 pub fn compute_relocations(layers: &Layers, stack: &mut LayerStack, problems: &mut Problems) {
+    let mut all = Vec::new();
+    let mut sources = HashSet::new();
     for &layer in &stack.layers {
         let Some(Value::Relocates(pairs)) = layers.field(layer, field::LAYER_RELOCATES) else {
             continue;
@@ -42,12 +98,8 @@ pub fn compute_relocations(layers: &Layers, stack: &mut LayerStack, problems: &m
                 problems.add("Invalid authored relocation");
                 continue;
             }
-            if !stack
-                .relocates
-                .iter()
-                .any(|relocate| relocate.source == *source)
-            {
-                stack.relocates.push(Relocate {
+            if sources.insert(source) {
+                all.push(Relocate {
                     source: source.clone(),
                     target: target.clone(),
                     origin: source.clone(),
@@ -55,14 +107,17 @@ pub fn compute_relocations(layers: &Layers, stack: &mut LayerStack, problems: &m
             }
         }
     }
-    if stack.relocates.is_empty() {
+    if all.is_empty() {
         return;
     }
-    drop_conflicts(stack, problems);
-    let snapshot = stack.relocates.clone();
-    for relocate in &mut stack.relocates {
-        relocate.origin = origin_of(&snapshot, &relocate.source, 0);
+    let mut relocates = Relocates::new(without_conflicts(all, problems));
+    let origins: Vec<Path> = (relocates.iter())
+        .map(|r| origin_of(&relocates, &r.source, 0))
+        .collect();
+    for (relocate, origin) in relocates.all.iter_mut().zip(origins) {
+        relocate.origin = origin;
     }
+    stack.relocates = relocates;
 }
 
 /// `_IsValidRelocatesEntryForComposing`: absolute prim paths without variant
@@ -85,63 +140,62 @@ fn plain_prim(path: &Path) -> bool {
     path.is_absolute() && path.is_prim() && !path.has_variant_selection()
 }
 
-/// `_ValidateAndRemoveConflictingRelocates`.
-fn drop_conflicts(stack: &mut LayerStack, problems: &mut Problems) {
-    let relocates = &stack.relocates;
-    let mut dropped = vec![false; relocates.len()];
-    let has_source = |path: &Path| relocates.iter().any(|relocate| relocate.source == *path);
-    for (at, entry) in relocates.iter().enumerate() {
-        if !entry.target.is_empty() {
-            for (other, relocate) in relocates.iter().enumerate() {
-                if other == at {
-                    continue;
-                }
-                // One target for two sources: all of them go.
-                if relocate.target == entry.target {
-                    dropped[at] = true;
-                }
-                // A target that is another's source: both go.
-                if relocate.source == entry.target {
-                    dropped[at] = true;
-                    dropped[other] = true;
-                }
-            }
-            let mut up = entry.target.parent();
-            while !up.is_empty() && !up.is_root() {
-                if has_source(&up) {
-                    dropped[at] = true;
-                }
-                up = up.parent();
-            }
-        }
-        let mut up = entry.source.parent();
-        while !up.is_empty() && !up.is_root() && up.depth() > 1 {
-            if has_source(&up) {
-                dropped[at] = true;
+/// `relocates` (one a source) less those that conflict
+/// (`_ValidateAndRemoveConflictingRelocates`): two sources with one target,
+/// a target that is another's source (both go), a target or a source under
+/// another's source.
+fn without_conflicts(relocates: Vec<Relocate>, problems: &mut Problems) -> Vec<Relocate> {
+    let sources: HashMap<&Path, usize> = (relocates.iter().enumerate())
+        .map(|(k, r)| (&r.source, k))
+        .collect();
+    let mut targets: HashMap<&Path, usize> = HashMap::new();
+    for relocate in relocates.iter().filter(|r| !r.target.is_empty()) {
+        *targets.entry(&relocate.target).or_default() += 1;
+    }
+    // Whether an ancestor of `path` above `floor` levels is a source.
+    let under_source = |path: &Path, floor: u32| {
+        let mut up = path.parent();
+        while !up.is_empty() && !up.is_root() && up.depth() > floor {
+            if sources.contains_key(&up) {
+                return true;
             }
             up = up.parent();
         }
-    }
-    let mut kept = Vec::new();
-    for (relocate, dropped) in stack.relocates.drain(..).zip(dropped) {
-        if dropped {
-            problems.add("Conflicting relocation");
-        } else {
-            kept.push(relocate);
+        false
+    };
+    let mut dropped = vec![false; relocates.len()];
+    for (at, entry) in relocates.iter().enumerate() {
+        if !entry.target.is_empty() {
+            if targets[&entry.target] > 1 {
+                dropped[at] = true;
+            }
+            if let Some(&other) = sources.get(&entry.target) {
+                dropped[at] = true;
+                dropped[other] = true;
+            }
+            dropped[at] |= under_source(&entry.target, 0);
         }
+        dropped[at] |= under_source(&entry.source, 1);
     }
-    stack.relocates = kept;
+    let kept: Vec<Relocate> = (relocates.iter().zip(&dropped))
+        .filter(|(_, dropped)| !**dropped)
+        .map(|(r, _)| r.clone())
+        .collect();
+    for _ in kept.len()..relocates.len() {
+        problems.add("Conflicting relocation");
+    }
+    kept
 }
 
 /// The source's origin: the nearest ancestor (or itself) another relocation
 /// targets, replaced by that relocation's own origin.
-fn origin_of(relocates: &[Relocate], source: &Path, depth: usize) -> Path {
+fn origin_of(relocates: &Relocates, source: &Path, depth: usize) -> Path {
     if depth > 64 {
         return source.clone();
     }
     let mut up = source.clone();
     while !up.is_empty() && !up.is_root() {
-        if let Some(found) = relocates.iter().find(|relocate| relocate.target == up) {
+        if let Some(found) = relocates.to_target(&up) {
             let origin = origin_of(relocates, &found.source, depth + 1);
             return source.replace_prefix(&up, &origin);
         }
@@ -155,17 +209,19 @@ fn origin_of(relocates: &[Relocate], source: &Path, depth: usize) -> Path {
 /// to target for targets not yet seen, and the root identity.
 pub fn relocation_pairs(stack: &LayerStack, path: &Path) -> PathPairs {
     let mut pairs = PathPairs::empty(true);
+    let mut seen = HashSet::new();
     for relocate in &stack.relocates {
         if relocate.target.is_empty() || !relocate.origin.has_prefix(path) {
             continue;
         }
+        seen.insert(&relocate.target);
         pairs.sources.push(relocate.origin.clone());
         pairs.targets.push(relocate.target.clone());
     }
     for relocate in &stack.relocates {
         if relocate.target.is_empty()
             || !relocate.source.has_prefix(path)
-            || pairs.targets.contains(&relocate.target)
+            || seen.contains(&relocate.target)
         {
             continue;
         }

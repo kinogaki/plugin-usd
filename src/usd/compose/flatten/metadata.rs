@@ -181,7 +181,7 @@ fn composes_over(value: &Value) -> bool {
 }
 
 /// `strong` over `weak`, or `strong` when they cannot compose.
-fn list_over<T: Clone + PartialEq>(
+fn list_over<T: Clone + PartialEq + std::hash::Hash>(
     strong: &Arc<ListOp<T>>,
     weak: &Arc<ListOp<T>>,
 ) -> Arc<ListOp<T>> {
@@ -231,7 +231,7 @@ fn merged_dictionary(strong: &Dictionary, weak: &Dictionary) -> Dictionary {
     made
 }
 
-fn explicit<T: Clone + PartialEq>(list: &Arc<ListOp<T>>) -> Arc<ListOp<T>> {
+fn explicit<T: Clone + PartialEq + std::hash::Hash>(list: &Arc<ListOp<T>>) -> Arc<ListOp<T>> {
     Arc::new(ListOp::explicit(list.applied()))
 }
 

@@ -19,6 +19,7 @@ use super::relocations::relocation_pairs;
 use super::tasks::{Frame, Indexer, kind};
 use crate::usd::error::{Error, Result};
 use crate::usd::sdf::{LayerOffset, ListOp, Path, Value, field};
+use std::hash::{Hash, Hasher};
 
 /// How `_AddArc` adds a node (`_ArcOptions`).
 #[derive(Clone, Copy)]
@@ -50,8 +51,9 @@ impl ArcOptions {
 
 /// One composed reference or payload: the asset (anchored identifier), the
 /// prim, its offset, and the position in the layer stack of the layer that
-/// authored it.
-#[derive(Clone, Debug, PartialEq)]
+/// authored it. Its asset, prim and offset are what it is (a list op finds
+/// it by them); the layer is where it came from.
+#[derive(Clone, Debug)]
 struct ArcItem {
     asset: String,
     prim: Path,
@@ -60,8 +62,20 @@ struct ArcItem {
 }
 
 impl ArcItem {
-    fn same(&self, other: &ArcItem) -> bool {
-        self.asset == other.asset && self.prim == other.prim && self.offset == other.offset
+    fn identity(&self) -> (&str, &Path, &LayerOffset) {
+        (&self.asset, &self.prim, &self.offset)
+    }
+}
+
+impl PartialEq for ArcItem {
+    fn eq(&self, other: &ArcItem) -> bool {
+        self.identity() == other.identity()
+    }
+}
+
+impl Hash for ArcItem {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.identity().hash(state);
     }
 }
 
@@ -152,82 +166,45 @@ impl Composer {
             } else {
                 field::REFERENCES
             };
-            let items: ListOp<(String, Path, LayerOffset)> = match spec.get(name) {
-                Some(Value::ReferenceListOp(list)) => map_list(list, |item| {
-                    (item.asset.to_string(), item.prim.clone(), item.offset)
-                }),
-                Some(Value::PayloadListOp(list)) => map_list(list, |item| {
-                    (item.asset.to_string(), item.prim.clone(), item.offset)
-                }),
+            let at = (stack, layer, position);
+            let items = match spec.get(name) {
+                Some(Value::ReferenceListOp(list)) => {
+                    map_list(list, |r| self.arc_item((&r.asset, &r.prim, r.offset), at))
+                }
+                Some(Value::PayloadListOp(list)) => {
+                    map_list(list, |p| self.arc_item((&p.asset, &p.prim, p.offset), at))
+                }
                 _ => continue,
             };
-            self.apply_arcs(&items, stack, layer, position, &mut out);
+            items.apply(&mut out);
         }
         out
     }
 
-    /// Apply one layer's list op, anchoring asset paths first and tagging
-    /// new items with the layer; an item whose asset expression evaluates
-    /// to nothing is left out.
-    fn apply_arcs(
+    /// A reference's or payload's asset, prim and offset as authored in
+    /// `layer` (at `position` in `stack`) as an item: its asset path
+    /// anchored at the layer; none when its asset expression evaluates to
+    /// nothing.
+    fn arc_item(
         &self,
-        list: &ListOp<(String, Path, LayerOffset)>,
-        stack: usize,
-        layer: usize,
-        position: usize,
-        out: &mut Vec<ArcItem>,
-    ) {
-        let anchor = |item: &(String, Path, LayerOffset)| -> Option<ArcItem> {
-            let mut asset = item.0.clone();
-            if is_expression(&asset) {
-                asset =
-                    evaluate_to_string(&asset, &self.stacks.stack(stack).variables)?.to_string();
-            }
-            let asset = if asset.is_empty() {
-                String::new()
-            } else {
-                assets::anchored(&asset, self.layers.identifier(layer))
-            };
-            Some(ArcItem {
-                asset,
-                prim: item.1.clone(),
-                offset: item.2,
-                layer: position,
-            })
+        (asset, prim, offset): (&str, &Path, LayerOffset),
+        (stack, layer, position): (usize, usize, usize),
+    ) -> Option<ArcItem> {
+        let mut asset = asset.to_owned();
+        if is_expression(&asset) {
+            asset = evaluate_to_string(&asset, &self.stacks.stack(stack).variables)?.to_string();
+        }
+        let asset = if asset.is_empty() {
+            String::new()
+        } else {
+            assets::anchored(&asset, self.layers.identifier(layer))
         };
-        let find =
-            |out: &Vec<ArcItem>, item: &ArcItem| out.iter().position(|known| known.same(item));
-        if list.explicit {
-            out.clear();
-            for item in list.explicit_items.iter().filter_map(anchor) {
-                if find(out, &item).is_none() {
-                    out.push(item);
-                }
-            }
-            return;
-        }
-        for item in list.deleted.iter().filter_map(anchor) {
-            if let Some(at) = find(out, &item) {
-                out.remove(at);
-            }
-        }
-        for item in list.added.iter().filter_map(anchor) {
-            if find(out, &item).is_none() {
-                out.push(item);
-            }
-        }
-        for item in list.prepended.iter().rev().filter_map(anchor) {
-            if let Some(at) = find(out, &item) {
-                out.remove(at);
-            }
-            out.insert(0, item);
-        }
-        for item in list.appended.iter().filter_map(anchor) {
-            if let Some(at) = find(out, &item) {
-                out.remove(at);
-            }
-            out.push(item);
-        }
+        Some(ArcItem {
+            asset,
+            prim: prim.clone(),
+            offset,
+            layer: position,
+        })
     }
 
     /// One reference or payload arc from `node`.
@@ -520,8 +497,9 @@ impl Composer {
     }
 }
 
-fn map_list<T, U: Clone + PartialEq>(list: &ListOp<T>, convert: impl Fn(&T) -> U) -> ListOp<U> {
-    let all = |items: &[T]| items.iter().map(&convert).collect::<Vec<U>>();
+/// `list` with each item converted, those `convert` gives none for left out.
+fn map_list<T, U>(list: &ListOp<T>, convert: impl Fn(&T) -> Option<U>) -> ListOp<U> {
+    let all = |items: &[T]| items.iter().filter_map(&convert).collect::<Vec<U>>();
     ListOp {
         explicit: list.explicit,
         explicit_items: all(&list.explicit_items),

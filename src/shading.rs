@@ -32,6 +32,11 @@ pub(crate) const LINEAR_REC709: &str = "lin_rec709_scene";
 /// The `customData` key holding the name a material had in Kinogaki.
 pub(crate) const NAME_KEY: &str = "kinogaki:name";
 
+/// The `customData` key holding a material's Double Sided: USD says sides
+/// on meshes, so a material no mesh shows, or one shown on a mesh beside a
+/// single-sided one, says its own.
+pub(crate) const DOUBLE_SIDED_KEY: &str = "kinogaki:doubleSided";
+
 /// The terminal output of `context`'s `terminal` (`surface`,
 /// `displacement`): `surface`, `mtlx:surface`.
 pub(crate) fn terminal(context: &str, terminal: &str) -> String {

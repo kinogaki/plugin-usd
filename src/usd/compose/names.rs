@@ -7,7 +7,7 @@
 //! a node weakest layer first, each name once, primOrder reordering after
 //! each layer.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::composer::Composer;
 use super::graph::PrimIndex;
@@ -116,9 +116,10 @@ impl Composer {
         out: &mut Vec<Token>,
         prohibited: &mut Vec<Token>,
     ) {
-        let mut renamed: Vec<(Token, Token)> = Vec::new();
-        let mut removed: Vec<Token> = Vec::new();
-        let mut added: Vec<Token> = Vec::new();
+        // Each found by its name, so the work is linear in the names.
+        let mut renamed: HashMap<Token, Token> = HashMap::new();
+        let mut removed: HashSet<Token> = HashSet::new();
+        let mut banned: HashSet<Token> = prohibited.iter().cloned().collect();
         let relocates = &self.stacks.stack(stack).relocates;
         for relocate in relocates {
             if relocate.source.parent() != *path {
@@ -126,14 +127,17 @@ impl Composer {
             }
             let old = relocate.source.name_token();
             if !relocate.target.is_empty() && relocate.target.parent() == *path {
-                renamed.push((old.clone(), relocate.target.name_token()));
+                renamed.insert(old.clone(), relocate.target.name_token());
             } else {
-                removed.push(old.clone());
+                removed.insert(old.clone());
             }
-            if !prohibited.contains(&old) {
+            if banned.insert(old.clone()) {
                 prohibited.push(old);
             }
         }
+        let held: HashSet<Token> = out.iter().cloned().collect();
+        let mut added: Vec<Token> = Vec::new();
+        let mut adding: HashSet<Token> = HashSet::new();
         for relocate in relocates {
             if relocate.target.is_empty()
                 || relocate.target.parent() != *path
@@ -142,26 +146,23 @@ impl Composer {
                 continue;
             }
             let name = relocate.target.name_token();
-            if !out.contains(&name) && !added.contains(&name) {
+            if !held.contains(&name) && adding.insert(name.clone()) {
                 added.push(name);
             }
         }
         if !renamed.is_empty() || !removed.is_empty() {
             let mut kept: Vec<Token> = Vec::new();
+            let mut keeping: HashSet<Token> = HashSet::new();
             for name in out.iter() {
-                let mut replaced = false;
-                for (from, to) in &renamed {
-                    if from == name {
-                        replaced = true;
-                        if !kept.contains(to) && !out.contains(to) {
-                            kept.push(to.clone());
-                        }
+                if let Some(to) = renamed.get(name) {
+                    if !held.contains(to) && keeping.insert(to.clone()) {
+                        kept.push(to.clone());
                     }
-                }
-                if replaced || removed.contains(name) {
                     continue;
                 }
-                kept.push(name.clone());
+                if !removed.contains(name) && keeping.insert(name.clone()) {
+                    kept.push(name.clone());
+                }
             }
             *out = kept;
         }
@@ -234,21 +235,22 @@ pub fn apply_ordering(names: &mut Vec<Token>, order: &[Token]) {
     if order.is_empty() || names.is_empty() {
         return;
     }
-    let mut unique: Vec<&Token> = Vec::new();
-    for name in order {
-        if !unique.contains(&name) {
-            unique.push(name);
-        }
-    }
+    let mut ordered: HashSet<&Token> = HashSet::new();
+    let unique: Vec<&Token> = order.iter().filter(|name| ordered.insert(name)).collect();
     let scratch = std::mem::take(names);
+    // Where each name is, found by the name.
+    let mut places: HashMap<&Token, Vec<usize>> = HashMap::new();
+    for (at, name) in scratch.iter().enumerate() {
+        places.entry(name).or_default().push(at);
+    }
     let mut taken = vec![false; scratch.len()];
     let mut tail = Vec::new();
-    for name in &unique {
+    for name in unique {
         // The last occurrence not yet taken.
-        let Some(start) = (0..scratch.len())
-            .rev()
-            .find(|&at| scratch[at] == **name && !taken[at])
-        else {
+        let last = places
+            .get(name)
+            .and_then(|at| at.iter().rev().find(|&&k| !taken[k]));
+        let Some(&start) = last else {
             continue;
         };
         let mut end = start;
@@ -256,14 +258,14 @@ pub fn apply_ordering(names: &mut Vec<Token>, order: &[Token]) {
             tail.push(scratch[end].clone());
             taken[end] = true;
             end += 1;
-            if end >= scratch.len() || unique.contains(&&scratch[end]) {
+            if end >= scratch.len() || ordered.contains(&scratch[end]) {
                 break;
             }
         }
     }
-    for (at, name) in scratch.into_iter().enumerate() {
+    for (at, name) in scratch.iter().enumerate() {
         if !taken[at] {
-            names.push(name);
+            names.push(name.clone());
         }
     }
     names.extend(tail);

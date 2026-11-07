@@ -12,6 +12,7 @@
 //! real part (text writes the real part first). Matrices are row-major.
 
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use super::half::Half;
@@ -213,6 +214,16 @@ impl LayerOffset {
     }
 }
 
+/// Equal offsets hash alike (`-0.0` as `0.0`), so list ops find them by
+/// their hash.
+impl Hash for LayerOffset {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for number in [self.offset, self.scale] {
+            (number + 0.0).to_bits().hash(state);
+        }
+    }
+}
+
 /// A dictionary: keys in byte order (OpenUSD's `VtDictionary` is a std::map).
 pub type Dictionary = BTreeMap<Token, Value>;
 
@@ -229,8 +240,16 @@ pub struct Reference {
     pub custom_data: Dictionary,
 }
 
+/// A reference hashes what names its target: its custom data is compared,
+/// not hashed.
+impl Hash for Reference {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (&self.asset, &self.prim, &self.offset).hash(state);
+    }
+}
+
 /// One payload (`SdfPayload`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct Payload {
     /// The layer the payload loads; empty for an internal payload.
     pub asset: Token,
