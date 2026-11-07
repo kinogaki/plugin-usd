@@ -6,16 +6,19 @@
 //! embedded, as ranges of the package. Apple's `usdchecker --arkit` (a
 //! local oracle) passes a usdz of MaterialX and USD Preview Surface
 //! materials.
-use crate::support::{Scratch, materials, metres, read_file, shape, square, write_file};
+use crate::support::{
+    Scratch, materials, metres, read_file, read_with, shape, square, stage, write_file,
+};
 use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageColor, ImageFile, ImageSource};
 use kinogaki_studio_api::image_files::{IMAGE_NODE, image_node, image_source};
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
 use kinogaki_studio_api::standard::{self, ImportedMaterial, Materials};
-use kinogaki_studio_api::{FileFormat, FileItem, Input, NodeTypeId, Purpose, Reading, Value};
+use kinogaki_studio_api::{
+    FileFormat, FileItem, FormatOptions, Input, NodeTypeId, Purpose, Reading, Value,
+};
 use kinogaki_studio_api_testing::Unconverted;
 use kinogaki_usd::Usd;
 use kinogaki_usd::usd::scene::{self, ReadOptions};
-use kinogaki_usd::usd::{Stage, StageOptions};
 use std::sync::Arc;
 
 /// An engine's material: its own surface (an Anodized Aluminum's values),
@@ -157,7 +160,7 @@ fn items(materials: Vec<ImportedMaterial>) -> Vec<FileItem> {
 /// The render contexts each material of the file at `path` has terminals
 /// in.
 fn contexts(path: &std::path::Path) -> Vec<Vec<String>> {
-    let mut stage = Stage::open_with(path, &StageOptions::default()).unwrap();
+    let mut stage = stage(path);
     let scene = scene::read(&mut stage, &ReadOptions::default()).unwrap();
     (scene.materials.iter())
         .map(|m| m.outputs.iter().map(|o| o.name.to_string()).collect())
@@ -232,7 +235,9 @@ fn a_usd_preview_surface_comes_back_as_it_was_and_alone() {
     ] {
         assert!(text.contains(spelled), "{spelled} in\n{text}");
     }
-    let read = read_file(&path, metres(), false);
+    // The texture is elsewhere on disk: read when files outside are.
+    let anywhere = FormatOptions::from([("outside".to_owned(), Value::Bool(true))]);
+    let read = read_with(&path, metres(), &anywhere);
     let back = &materials(&read).materials[0];
     assert_eq!(shape(&back.inside), shape(&written.inside));
 }
@@ -243,7 +248,7 @@ fn other_applications_see_the_textured_base_color_in_the_preview() {
     let path = dir.path().join("table.usdz");
     let file = EmbeddedFile::new("wood.png", vec![1, 2, 3, 4]);
     write_file(&path, &items(vec![wood(&file)]), metres());
-    let mut stage = Stage::open(&path).unwrap();
+    let mut stage = stage(&path);
     let scene = scene::read(&mut stage, &ReadOptions::default()).unwrap();
     let material = &scene.materials[0];
     let preview = material.surface("").unwrap();

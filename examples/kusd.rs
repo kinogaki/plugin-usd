@@ -21,9 +21,13 @@ use std::panic::Location;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use kinogaki_studio_api::format::files::Named;
+use kinogaki_studio_api::format::{ReadBudget, options};
 use kinogaki_studio_api::geometry::parallel::{self, Workers};
+use kinogaki_studio_api::{FormatOptions, Input, Purpose, Reading, Units, Value};
+use kinogaki_studio_api_testing::Unconverted;
 use kinogaki_usd::usd::scene::{self, NodeKind, ReadOptions};
-use kinogaki_usd::usd::{self as usd, Result, Stage, crate_file, package, text};
+use kinogaki_usd::usd::{self as usd, Result, Stage, StageOptions, crate_file, package, text};
 
 fn main() -> ExitCode {
     let threads = std::thread::available_parallelism().map_or(1, usize::from);
@@ -37,9 +41,7 @@ fn main() -> ExitCode {
         .as_slice()
     {
         ["cat", input] => cat(input),
-        ["write", input, output] => {
-            usd::read_layer(input).and_then(|layer| usd::write_layer(&layer, output))
-        }
+        ["write", input, output] => read(input).and_then(|layer| usd::write_layer(&layer, output)),
         ["flatten", input] => flatten(input),
         ["scene", input] => summarize(input, None),
         ["scene", input, output] => summarize(input, Some(output)),
@@ -66,15 +68,36 @@ fn main() -> ExitCode {
     }
 }
 
+/// The layer at `input`, read whole.
+fn read(input: &str) -> Result<usd::sdf::LayerData> {
+    let bytes = std::fs::read(input).map_err(|e| usd::Error::from(e).in_file(input))?;
+    usd::read_layer_bytes(&bytes, &ReadBudget::default()).map_err(|e| e.in_file(input))
+}
+
+/// The stage rooted at `input`, reading every file it names wherever it
+/// is: the tool reads what its user points it at (Import reads only the
+/// file's folder unless asked).
+fn open(input: &str) -> Result<Stage> {
+    let reading = Reading::new(Purpose::Objects, Units::default(), &Unconverted);
+    let outside = FormatOptions::from([(options::OUTSIDE.to_owned(), Value::Bool(true))]);
+    let path = std::path::Path::new(input);
+    let disk = Named::new(&Input::file(path), &outside, &reading);
+    let options = StageOptions {
+        disk: Some(std::sync::Arc::new(disk)),
+        ..StageOptions::default()
+    };
+    Stage::open(path, &options)
+}
+
 fn cat(input: &str) -> Result<()> {
-    let text = text::write_usda(&usd::read_layer(input)?)?;
+    let text = text::write_usda(&read(input)?)?;
     std::io::stdout().lock().write_all(&text)?;
     Ok(())
 }
 
 /// Print the composed stage as usda, as `usdcat --flatten` does.
 fn flatten(input: &str) -> Result<()> {
-    let mut stage = Stage::open(input)?;
+    let mut stage = open(input)?;
     let layer = stage.flatten()?;
     for warning in stage.warnings() {
         eprintln!("kusd: warning: {warning}");
@@ -87,7 +110,7 @@ fn flatten(input: &str) -> Result<()> {
 
 /// Summarize the scene of `input`; with `output`, write it there.
 fn summarize(input: &str, output: Option<&str>) -> Result<()> {
-    let mut stage = Stage::open(input)?;
+    let mut stage = open(input)?;
     let scene = scene::read(&mut stage, &ReadOptions::default())?;
     for warning in stage.warnings().iter().chain(&scene.warnings) {
         eprintln!("warning: {warning}");
@@ -139,13 +162,17 @@ fn best<T>(runs: usize, mut job: impl FnMut() -> Result<T>) -> Result<(f64, T)> 
 /// first: the times exclude file I/O).
 fn bench(input: &str, runs: usize) -> Result<()> {
     let bytes = std::fs::read(input)?;
-    let (input_read, layer) = best(runs, || usd::read_layer_bytes(&bytes))?;
+    let (input_read, layer) = best(runs, || {
+        usd::read_layer_bytes(&bytes, &ReadBudget::default())
+    })?;
     let (usda_write, usda) = best(runs, || text::write_usda(&layer))?;
-    let (usda_read, _) = best(runs, || text::read_usda(&usda))?;
+    let (usda_read, _) = best(runs, || text::read_usda(&usda, &ReadBudget::default()))?;
     let (usdc_write, usdc) = best(runs, || crate_file::write_usdc(&layer))?;
-    let (usdc_read, _) = best(runs, || crate_file::read_usdc(&usdc))?;
+    let (usdc_read, _) = best(runs, || {
+        crate_file::read_usdc(&usdc, &ReadBudget::default())
+    })?;
     let (usdz_write, usdz) = best(runs, || package::write_usdz(&layer, "root.usdc", &[]))?;
-    let (usdz_read, _) = best(runs, || package::read_usdz(&usdz))?;
+    let (usdz_read, _) = best(runs, || package::read_usdz(&usdz, &ReadBudget::default()))?;
     println!("| Case | Time (best of {runs}) | Bytes |");
     println!("|---|---:|---:|");
     for (name, ms, size) in [
@@ -165,9 +192,9 @@ fn bench(input: &str, runs: usize) -> Result<()> {
 /// Time opening the stage, reading its scene, and writing it as a usdz
 /// (authored, packaged in memory, and written to a file with its assets).
 fn scene_time(input: &str, runs: usize) -> Result<()> {
-    let (open, _) = best(runs, || Stage::open(input))?;
+    let (opened, _) = best(runs, || open(input))?;
     let (read, scene) = best(runs, || {
-        scene::read(&mut Stage::open(input)?, &ReadOptions::default())
+        scene::read(&mut open(input)?, &ReadOptions::default())
     })?;
     let (author, layer) = best(runs, || scene::author(&scene))?;
     let (usdz, _) = best(runs, || package::write_usdz(&layer, "root.usdc", &[]))?;
@@ -175,7 +202,7 @@ fn scene_time(input: &str, runs: usize) -> Result<()> {
     let (written, _) = best(runs, || scene::write_file(&scene, &file))?;
     std::fs::remove_file(&file)?;
     println!(
-        "open {open:.1} ms, open + scene {read:.1} ms, author {author:.1} ms, usdz {usdz:.1} ms, usdz file {written:.1} ms (best of {runs})"
+        "open {opened:.1} ms, open + scene {read:.1} ms, author {author:.1} ms, usdz {usdz:.1} ms, usdz file {written:.1} ms (best of {runs})"
     );
     Ok(())
 }

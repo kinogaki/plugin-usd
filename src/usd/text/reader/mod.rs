@@ -27,18 +27,18 @@ mod values;
 
 use crate::usd::error::{Error, Result};
 use crate::usd::sdf::LayerData;
+use kinogaki_studio_api::format::ReadBudget;
 
-/// The deepest nesting of dictionaries, tuples and recorded values.
-const MOST_NESTING: usize = 256;
-
-/// Read usda text into a layer. Fails with an error naming the line and
-/// column on text that is not a layer.
-pub fn read_usda(text: &[u8]) -> Result<LayerData> {
+/// Read usda text into a layer, prims and values nesting no deeper than
+/// `budget` allows. Fails with an error naming the line and column on text
+/// that is not a layer.
+pub fn read_usda(text: &[u8], budget: &ReadBudget) -> Result<LayerData> {
     let mut reader = Reader {
         data: text,
         at: 0,
         layer: LayerData::new(),
         nesting: 0,
+        budget,
     };
     reader.read_layer()?;
     Ok(reader.layer)
@@ -49,6 +49,7 @@ struct Reader<'a> {
     at: usize,
     layer: LayerData,
     nesting: usize,
+    budget: &'a ReadBudget,
 }
 
 impl Reader<'_> {
@@ -75,15 +76,15 @@ impl Reader<'_> {
         error
     }
 
-    /// Enter a nested construct; fails past the nesting limit.
+    /// Enter a nested construct (a prim, a dictionary, a tuple); fails past
+    /// the budget's depth, or once the read is cancelled.
     fn enter(&mut self) -> Result<()> {
         self.nesting += 1;
-        if self.nesting > MOST_NESTING {
-            let mut error = self.error("values nest too deeply");
-            error.kind = crate::usd::ErrorKind::Limit;
-            return Err(error);
-        }
-        Ok(())
+        self.budget.nest(self.nesting).map_err(|refused| {
+            let mut error = self.error(refused.message());
+            error.kind = crate::usd::Error::from(refused).kind;
+            error
+        })
     }
 
     fn leave(&mut self) {

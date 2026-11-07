@@ -1,10 +1,11 @@
 //! Composition on our own fixtures (tests/fixtures/compose): strength order,
 //! variant selection, payload loading, layer offsets, instancing, cycles.
 
+use kinogaki_studio_api::format::ReadBudget;
 use std::path::PathBuf;
 
 use kinogaki_usd::usd::sdf::{LayerData, Path, Value, field};
-use kinogaki_usd::usd::{FlattenOptions, Stage, StageOptions};
+use kinogaki_usd::usd::{FlattenOptions, StageOptions};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -24,7 +25,7 @@ fn text(layer: &LayerData, path: &str) -> Option<String> {
 }
 
 fn flat(name: &str, options: &StageOptions) -> LayerData {
-    let mut stage = Stage::open_with(fixture(name), options).unwrap();
+    let mut stage = crate::common::open_with(fixture(name), options).unwrap();
     stage
         .flatten_with(FlattenOptions {
             comment: false,
@@ -98,7 +99,7 @@ fn sublayer_offsets_move_samples() {
 
 #[test]
 fn cycles_and_missing_layers_are_reported() {
-    let mut stage = Stage::open(fixture("cycle_a.usda")).unwrap();
+    let mut stage = crate::common::open(fixture("cycle_a.usda")).unwrap();
     let layer = stage.flatten().unwrap();
     assert!(layer.has_spec(&p("/A")));
     assert!(
@@ -110,7 +111,7 @@ fn cycles_and_missing_layers_are_reported() {
         stage.warnings()
     );
 
-    let mut stage = Stage::open(fixture("sublayer_cycle.usda")).unwrap();
+    let mut stage = crate::common::open(fixture("sublayer_cycle.usda")).unwrap();
     let layer = stage.flatten().unwrap();
     assert!(layer.has_spec(&p("/Here")));
     let warnings = stage.warnings();
@@ -128,7 +129,7 @@ fn cycles_and_missing_layers_are_reported() {
 
 #[test]
 fn instances_share_prototypes() {
-    let mut stage = Stage::open(fixture("instances.usda")).unwrap();
+    let mut stage = crate::common::open(fixture("instances.usda")).unwrap();
     let layer = stage.flatten().unwrap();
     assert!(layer.has_spec(&p("/Flattened_Prototype_1/Part")));
     for instance in ["/One", "/Two"] {
@@ -145,12 +146,12 @@ fn instances_share_prototypes() {
 
 #[test]
 fn stage_metadata_reads_the_root_layer() {
-    let stage = Stage::open(fixture("livrps_root.usda")).unwrap();
+    let stage = crate::common::open(fixture("livrps_root.usda")).unwrap();
     assert_eq!(stage.up_axis().as_str(), "Z");
     assert_eq!(stage.meters_per_unit(), 1.0);
     assert_eq!(stage.time_codes_per_second(), 24.0);
     assert!(!stage.is_single_layer());
-    assert!(Stage::open(fixture("nothing_here.usda")).is_err());
+    assert!(crate::common::open(fixture("nothing_here.usda")).is_err());
 }
 
 #[test]
@@ -160,6 +161,7 @@ fn packaged_layers_compose() {
     std::fs::create_dir_all(&directory).unwrap();
     let model = kinogaki_usd::usd::text::read_usda(
         b"#usda 1.0\n(\n    defaultPrim = \"M\"\n)\n\ndef \"M\"\n{\n    custom int inside = 7\n}\n",
+        &ReadBudget::default(),
     )
     .unwrap();
     let package = kinogaki_usd::usd::package::write_usdz(&model, "model.usdc", &[]).unwrap();
@@ -169,7 +171,7 @@ fn packaged_layers_compose() {
         "#usda 1.0\n\ndef \"Use\" (\n    references = @./model.usdz@\n)\n{\n}\n",
     )
     .unwrap();
-    let mut stage = Stage::open(directory.join("root.usda")).unwrap();
+    let mut stage = crate::common::open(directory.join("root.usda")).unwrap();
     let layer = stage.flatten().unwrap();
     std::fs::remove_dir_all(&directory).ok();
     assert_eq!(
@@ -208,11 +210,11 @@ fn deep_arc_chains_fail_cleanly() {
         std::fs::write(scratch.0.join(format!("l{at}.usda")), body).unwrap();
     }
     let result = std::thread::Builder::new()
-        .stack_size(2 << 20)
+        .stack_size(kinogaki_studio_api_testing::IMPORT_STACK)
         .spawn({
             let root = scratch.0.join("l0.usda");
             move || {
-                Stage::open(root)
+                crate::common::open(root)
                     .and_then(|mut stage| stage.flatten())
                     .map(|layer| layer.len())
             }
@@ -227,7 +229,7 @@ fn deep_arc_chains_fail_cleanly() {
         let body = format!("#usda 1.0\n(\n    subLayers = [@./s{}.usda@]\n)\n", at + 1);
         std::fs::write(scratch.0.join(format!("s{at}.usda")), body).unwrap();
     }
-    assert!(Stage::open(scratch.0.join("s0.usda")).is_err());
+    assert!(crate::common::open(scratch.0.join("s0.usda")).is_err());
 }
 
 #[test]
@@ -267,7 +269,7 @@ fn mutated_layers_never_panic() {
         }
         let root = scratch.0.join("root.usda");
         std::fs::write(&root, &bytes).unwrap();
-        if let Ok(mut stage) = Stage::open(&root) {
+        if let Ok(mut stage) = crate::common::open(&root) {
             let _ = stage.flatten();
         }
     }

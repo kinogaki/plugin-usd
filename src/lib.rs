@@ -83,13 +83,18 @@ impl FileFormat for Usd {
         &*TYPES
     }
     /// Textures on disk stay paths unless embedded; a package's are
-    /// embedded whatever it says.
+    /// embedded whatever it says. Layers, packages and textures outside the
+    /// file's folder are read only when asked.
     fn options(&self) -> FormatOptions {
-        FormatOptions::from([(options::EMBED.to_owned(), Value::Bool(false))])
+        FormatOptions::from([
+            (options::EMBED.to_owned(), Value::Bool(false)),
+            (options::OUTSIDE.to_owned(), Value::Bool(false)),
+        ])
     }
     fn schema(&self, chosen: &FormatOptions, _: Purpose) -> Schema {
-        let embed = options::option(chosen, options::EMBED, Value::bool).unwrap_or(false);
-        options::embed(Schema::default(), embed)
+        let on = |name| options::option(chosen, name, Value::bool).unwrap_or(false);
+        let schema = options::embed(Schema::default(), on(options::EMBED));
+        options::outside(schema, on(options::OUTSIDE))
     }
     fn read(
         &self,

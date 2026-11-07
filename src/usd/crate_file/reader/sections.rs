@@ -7,12 +7,10 @@
 
 use super::{Crate, NEWEST_MINOR, SpecRecord, invalid};
 use crate::usd::crate_file::compression::decompress;
+use crate::usd::crate_file::lz4;
 use crate::usd::crate_file::rep::Rep;
 use crate::usd::error::{Error, Result};
 use crate::usd::sdf::Token;
-
-/// The largest token section accepted, decompressed.
-const MOST_TOKEN_BYTES: u64 = 1 << 32;
 
 impl Crate<'_> {
     pub(super) fn read_structure(&mut self) -> Result<()> {
@@ -75,12 +73,16 @@ impl Crate<'_> {
         let owned;
         let chars: &[u8] = if self.since(4, 0) {
             let size = self.u64_at(start + 8)?;
-            let packed = self.u64_at(start + 16)?;
-            if size > MOST_TOKEN_BYTES {
-                return Err(invalid("a crate token section too large"));
+            let packed = self.bytes(start + 24, self.u64_at(start + 16)?)?;
+            if size > lz4::most_decompressed(packed.len() as u64) {
+                return Err(invalid(
+                    "a crate token section claiming more than its compressed bytes hold",
+                ));
             }
+            self.budget.expand(packed.len() as u64, size)?;
+            self.charge::<u8>(size)?;
             let mut text = Vec::with_capacity(size as usize);
-            decompress(self.bytes(start + 24, packed)?, &mut text, size as usize)?;
+            decompress(packed, &mut text, size as usize)?;
             if text.len() as u64 != size {
                 return Err(invalid("a crate token section of the wrong size"));
             }
@@ -93,6 +95,7 @@ impl Crate<'_> {
         if count > chars.len() as u64 + 1 {
             return Err(invalid("a crate claims more tokens than its bytes hold"));
         }
+        self.charge::<Token>(count)?;
         let mut tokens = Vec::with_capacity(count as usize);
         let mut pieces = chars.split(|&b| b == 0);
         for _ in 0..count {
@@ -122,8 +125,8 @@ impl Crate<'_> {
 
     fn read_fields(&mut self, start: u64) -> Result<()> {
         let count = self.count_at(start, 1)?;
-        let mut fields = Vec::with_capacity(count as usize);
         if !self.since(4, 0) {
+            let mut fields = Vec::with_capacity(count as usize);
             let records = self.bytes(start + 8, count * 16)?;
             for record in records.as_chunks::<16>().0.iter() {
                 let token = u32::from_le_bytes(record[4..8].try_into().expect("4 bytes"));
@@ -134,14 +137,15 @@ impl Crate<'_> {
             return Ok(());
         }
         let (tokens, at) = self.compressed_ints::<i32>(start + 8, count as usize)?;
-        let reps_size = self.u64_at(at)?;
+        // One field a token index: no more fields than tokens decoded.
+        let count = tokens.len() as u64;
+        let packed = self.bytes(at + 8, self.u64_at(at)?)?;
+        self.budget.expand(packed.len() as u64, count * 8)?;
+        self.charge::<(Token, Rep)>(count)?;
+        let mut fields = Vec::with_capacity(count as usize);
         let mut reps = Vec::with_capacity(count as usize * 8);
         if count > 0 {
-            decompress(
-                self.bytes(at + 8, reps_size)?,
-                &mut reps,
-                count as usize * 8,
-            )?;
+            decompress(packed, &mut reps, count as usize * 8)?;
             if reps.len() != count as usize * 8 {
                 return Err(invalid("crate field reps of the wrong size"));
             }

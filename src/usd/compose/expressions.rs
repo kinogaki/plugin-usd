@@ -9,7 +9,10 @@
 //! of those in brackets, or a call of if, eq, neq, lt, leq, gt, geq, and, or,
 //! not, contains, at, len or defined (`matches_regex` fails: there is no
 //! regular expression engine here). A variable whose value is itself an
-//! expression is evaluated in turn; circular ones fail.
+//! expression is evaluated in turn, once however often it is named;
+//! circular ones fail, and so does a string longer than 4096 bytes.
+
+use std::collections::HashMap;
 
 use crate::usd::sdf::{Array, Dictionary, Token, Value};
 
@@ -59,6 +62,7 @@ pub fn evaluate(expression: &str, variables: &Dictionary) -> Evaluated {
     let mut evaluator = Evaluator {
         variables,
         stack: Vec::new(),
+        evaluated: HashMap::new(),
     };
     evaluator.evaluate(expression)
 }
@@ -76,10 +80,16 @@ pub fn evaluate_to_string(expression: &str, variables: &Dictionary) -> Option<To
 /// expressions.
 const MOST_DEPTH: usize = 64;
 
+/// The longest string an expression makes: longer than any path, and short
+/// enough that variables doubling a string fail before they cost memory.
+const MOST_TEXT: usize = 4096;
+
 struct Evaluator<'a> {
     variables: &'a Dictionary,
     /// Variables being evaluated, to catch circular ones.
     stack: Vec<String>,
+    /// Each variable's value, once evaluated.
+    evaluated: HashMap<String, Evaluated>,
 }
 
 struct Parser<'t> {
@@ -219,8 +229,18 @@ impl Evaluator<'_> {
         }
     }
 
-    /// The value of variable `name` (a failure when it has none).
+    /// The value of variable `name` (a failure when it has none), each
+    /// evaluated once.
     fn variable(&mut self, name: &str) -> Evaluated {
+        if let Some(value) = self.evaluated.get(name) {
+            return value.clone();
+        }
+        let value = self.evaluate_variable(name);
+        self.evaluated.insert(name.to_owned(), value.clone());
+        value
+    }
+
+    fn evaluate_variable(&mut self, name: &str) -> Evaluated {
         if self.stack.iter().any(|held| held == name) || self.stack.len() > MOST_DEPTH {
             return Evaluated::Failed;
         }
@@ -272,6 +292,7 @@ impl Evaluator<'_> {
                     Evaluated::Nothing => {}
                     _ => failed = true,
                 }
+                failed |= text.len() > MOST_TEXT;
                 continue;
             }
             if byte == b'\\' && parser.at + 1 < parser.text.len() {

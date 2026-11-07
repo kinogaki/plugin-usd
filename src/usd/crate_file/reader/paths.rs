@@ -11,11 +11,13 @@
 
 use super::{Crate, invalid};
 use crate::usd::error::Result;
+use crate::usd::sdf::MOST_PATH_DEPTH as MOST_DEPTH;
 use crate::usd::sdf::{Path, PathKind};
 
 impl Crate<'_> {
     pub(super) fn read_paths(&mut self, start: u64) -> Result<()> {
         let count = self.count_at(start, 1)? as usize;
+        self.charge::<Path>(count as u64)?;
         self.paths = vec![Path::empty(); count];
         if !self.since(4, 0) {
             return self.read_path_headers(start + 8);
@@ -130,8 +132,12 @@ impl Crate<'_> {
         Ok(())
     }
 
-    /// `parent` with the element `token` appended.
+    /// `parent` with the element `token` appended, no deeper than paths
+    /// may be.
     fn append_element(&self, parent: &Path, token: &str, property: bool) -> Result<Path> {
+        if parent.depth() >= MOST_DEPTH {
+            return Err(invalid("a crate path deeper than 4096 elements"));
+        }
         if property {
             return Ok(parent.property(token));
         }

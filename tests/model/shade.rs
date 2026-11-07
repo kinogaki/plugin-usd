@@ -3,6 +3,7 @@
 //! and written back unchanged.
 
 use crate::common::{fixture, node, round_trips, scene_of};
+use kinogaki_studio_api::format::ReadBudget;
 use kinogaki_usd::usd::package::Bytes;
 use kinogaki_usd::usd::scene::{self, AssetSource, ReadOptions};
 use kinogaki_usd::usd::sdf::{Path, Token, Value};
@@ -356,7 +357,7 @@ def Xform "Root"
 "#;
     // In a package, the document travels with the layer.
     let package = kinogaki_usd::usd::package::write_usdz(
-        &kinogaki_usd::usd::text::read_usda(layer).unwrap(),
+        &kinogaki_usd::usd::text::read_usda(layer, &ReadBudget::default()).unwrap(),
         "root.usda",
         &[("steel.mtlx", STEEL_MTLX)],
     )

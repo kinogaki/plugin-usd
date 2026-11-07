@@ -2,6 +2,7 @@
 //! and scenes written as usdz with their assets, or beside a loose layer.
 
 use crate::common::{node, scene_of};
+use kinogaki_studio_api::format::ReadBudget;
 use kinogaki_usd::usd::package::{Bytes, Package};
 use kinogaki_usd::usd::scene::{self, Asset, AssetSource, NodeKind, ReadOptions};
 use kinogaki_usd::usd::sdf::{Token, Value};
@@ -41,7 +42,7 @@ def Xform "Lamp"
 
 /// A usdz of `TEXTURED` carrying its two files.
 fn package() -> Vec<u8> {
-    let layer = kinogaki_usd::usd::text::read_usda(TEXTURED).unwrap();
+    let layer = kinogaki_usd::usd::text::read_usda(TEXTURED, &ReadBudget::default()).unwrap();
     let files = [("textures/paper.png", PNG), ("sky.exr", EXR)];
     kinogaki_usd::usd::package::write_usdz(&layer, "lamp.usdc", &files).unwrap()
 }
@@ -141,7 +142,11 @@ fn a_loose_layer_writes_held_assets_beside_it() {
     let text = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
     assert!(text.contains("@lamp_textures/paper.png@"), "{text}");
     // Read from disk, the files are found beside it.
-    let again = scene::read(&mut Stage::open(&path).unwrap(), &ReadOptions::default()).unwrap();
+    let again = scene::read(
+        &mut crate::common::open(&path).unwrap(),
+        &ReadOptions::default(),
+    )
+    .unwrap();
     assert!(
         again
             .assets
@@ -159,6 +164,7 @@ fn a_package_inside_a_package_is_read_through() {
     let outer = kinogaki_usd::usd::package::write_usdz(
         &kinogaki_usd::usd::text::read_usda(
             b"#usda 1.0\ndef \"Room\" (references = @lamp.usdz@) {}\n",
+            &ReadBudget::default(),
         )
         .unwrap(),
         "room.usda",

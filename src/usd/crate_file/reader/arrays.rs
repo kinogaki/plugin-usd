@@ -128,6 +128,7 @@ impl Crate<'_> {
     }
 
     fn plain<T: CrateElement>(&self, at: u64, count: u64) -> Result<Vec<T>> {
+        self.charge::<T>(count)?;
         let size = count
             .checked_mul(T::SIZE as u64)
             .ok_or_else(|| invalid("a crate array too large"))?;
@@ -142,6 +143,7 @@ impl Crate<'_> {
     ) -> Result<Vec<T>> {
         if compressed && self.since(5, 0) {
             let size = self.u64_at(at)?;
+            self.charge::<T>(count)?;
             return decompress_integers::<T>(self.bytes(at + 8, size)?, count as usize);
         }
         self.plain(at, count)
@@ -153,6 +155,7 @@ impl Crate<'_> {
         if !(compressed && self.since(6, 0)) {
             return self.plain(at, count);
         }
+        self.charge::<(T, i32)>(count)?;
         let code = self.bytes(at, 1)?[0];
         match code {
             b'i' => {
@@ -187,6 +190,7 @@ impl Crate<'_> {
         count: u64,
         resolve: impl Fn(u64) -> Result<T>,
     ) -> Result<Vec<T>> {
+        self.charge::<T>(count)?;
         self.bytes(at, count * 4)?
             .as_chunks::<4>()
             .0

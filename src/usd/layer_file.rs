@@ -8,6 +8,7 @@ use std::path::Path as FilePath;
 
 use crate::usd::error::{Error, Result};
 use crate::usd::sdf::LayerData;
+use kinogaki_studio_api::format::ReadBudget;
 
 /// A layer serialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,24 +47,16 @@ impl Format {
     }
 }
 
-/// Read a layer from its bytes, by their signature.
-pub fn read_layer_bytes(data: &[u8]) -> Result<LayerData> {
+/// Read a layer from its bytes, by their signature, within `budget`.
+pub fn read_layer_bytes(data: &[u8], budget: &ReadBudget) -> Result<LayerData> {
     match Format::detect(data) {
-        Some(Format::Usda) => crate::usd::text::read_usda(data),
-        Some(Format::Usdc) => crate::usd::crate_file::read_usdc(data),
-        Some(Format::Usdz) => crate::usd::package::read_usdz(data),
+        Some(Format::Usda) => crate::usd::text::read_usda(data, budget),
+        Some(Format::Usdc) => crate::usd::crate_file::read_usdc(data, budget),
+        Some(Format::Usdz) => crate::usd::package::read_usdz(data, budget),
         None => Err(Error::invalid(
             "not a USD layer: no usda, usdc or usdz signature",
         )),
     }
-}
-
-/// Read the layer at `path` (a package's root layer for usdz).
-pub fn read_layer(path: impl AsRef<FilePath>) -> Result<LayerData> {
-    let path = path.as_ref();
-    let name = path.display().to_string();
-    let data = std::fs::read(path).map_err(|error| Error::from(error).in_file(name.clone()))?;
-    read_layer_bytes(&data).map_err(|error| error.in_file(name))
 }
 
 /// The layer serialized as `format` (a usdz holds it as a crate).
@@ -84,19 +77,4 @@ pub fn write_layer(layer: &LayerData, path: impl AsRef<FilePath>) -> Result<()> 
     })?;
     let bytes = layer_bytes(layer, format).map_err(|error| error.in_file(name.clone()))?;
     std::fs::write(path, bytes).map_err(|error| Error::from(error).in_file(name))
-}
-
-/// The layer at `path` with everything it composes flattened into one
-/// layer (instances expanded, each holding its own prims), and the warnings
-/// composing left. A layer with nothing to compose is returned as it is.
-pub fn open_flattened(path: impl AsRef<FilePath>) -> Result<(LayerData, Vec<String>)> {
-    let mut stage = crate::usd::Stage::open(path)?;
-    if stage.is_single_layer() {
-        return Ok((stage.root_layer().clone(), stage.warnings()));
-    }
-    let layer = stage.flatten_with(crate::usd::FlattenOptions {
-        comment: false,
-        instancing: false,
-    })?;
-    Ok((layer, stage.warnings()))
 }

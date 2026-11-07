@@ -1,5 +1,8 @@
 //! Universal Scene Description: the format's own model, with no SDK in it
-//! but the process's workers.
+//! but the process's workers and what bounds a read: its budget
+//! (`format::ReadBudget`), which every count and depth a file claims is
+//! checked against, and the resolver of the files a file names
+//! (`format::files::Named`), through which alone it reads the disk.
 //!
 //! - [`sdf`]: the data model, after OpenUSD's Sdf: a layer is specs keyed by
 //!   path, each a list of fields.
@@ -24,6 +27,4 @@ pub mod text;
 
 pub use compose::{FlattenOptions, Stage, StageOptions};
 pub use error::{Error, ErrorKind, Result};
-pub use layer_file::{
-    Format, layer_bytes, open_flattened, read_layer, read_layer_bytes, write_layer,
-};
+pub use layer_file::{Format, layer_bytes, read_layer_bytes, write_layer};

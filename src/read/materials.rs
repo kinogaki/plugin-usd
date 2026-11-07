@@ -293,7 +293,11 @@ impl<'m> Reader<'m, '_, '_> {
     ) {
         let Some(value) = &holder.value else { return };
         if let Usd::Asset(path) = value {
-            let source = ImageSource::new(self.files.file(path), self.texture_color(n, holder));
+            // A file left unresolved leaves the input as its node has it.
+            let Some(file) = self.files.file(path) else {
+                return;
+            };
+            let source = ImageSource::new(file, self.texture_color(n, holder));
             let image = match images.iter().find(|(s, _)| *s == source) {
                 Some((_, image)) => *image,
                 None => {

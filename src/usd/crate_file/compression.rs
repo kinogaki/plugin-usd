@@ -154,7 +154,16 @@ pub fn decompress_integers<T: CrateInt>(input: &[u8], count: usize) -> Result<Ve
     if count == 0 {
         return Ok(Vec::new());
     }
-    let mut encoded = Vec::with_capacity(encoded_bound(count, T::WIDTH));
+    // Two bits a code are the least `count` integers take, compressed or not.
+    let least = T::WIDTH as u64 + (count as u64 * 2).div_ceil(8);
+    let most = lz4::most_decompressed(input.len() as u64);
+    if least > most {
+        return Err(Error::invalid(
+            "crate integers counting more than their compressed bytes hold",
+        ));
+    }
+    let bound = encoded_bound(count, T::WIDTH).min(most as usize);
+    let mut encoded = Vec::with_capacity(bound);
     decompress(input, &mut encoded, encoded_bound(count, T::WIDTH))?;
     decode_integers(&encoded, count)
 }

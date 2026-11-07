@@ -13,7 +13,8 @@ pub enum ErrorKind {
     Limit,
     /// Reading or writing a file failed.
     Io,
-    /// The work was no longer wanted ([`StageOptions::cancel`](crate::usd::StageOptions::cancel)).
+    /// The work was no longer wanted (its [`ReadBudget`](kinogaki_studio_api::format::ReadBudget)'s
+    /// cancellation).
     Cancelled,
 }
 
@@ -99,6 +100,17 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// What a read's budget refused ([`ReadBudget`](kinogaki_studio_api::format::ReadBudget)):
+/// a limit, or the read's cancellation.
+impl From<kinogaki_studio_api::Error> for Error {
+    fn from(error: kinogaki_studio_api::Error) -> Error {
+        match error.is_cancelled() {
+            true => Error::cancelled(),
+            false => Error::limit(error.message()),
+        }
+    }
+}
 
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Error {

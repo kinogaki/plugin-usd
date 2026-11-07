@@ -26,7 +26,7 @@ use crate::usd::{ErrorKind, Stage, StageOptions};
 use files::{Files, Held};
 use geometry::Shaping;
 use kinogaki_studio_api::edit::editor::{Placed, gather};
-use kinogaki_studio_api::format::options;
+use kinogaki_studio_api::format::files::Named;
 use kinogaki_studio_api::geometry::image::ImageSource;
 use kinogaki_studio_api::geometry::{Attribute, Attributes, Column, Domain, Text, Xform, names};
 use kinogaki_studio_api::image_files::OP;
@@ -34,7 +34,7 @@ use kinogaki_studio_api::standard::{
     self, ImportedImage, ImportedMaterial, Instances, MAX_DEPTH, Materials,
 };
 use kinogaki_studio_api::{
-    Data, Diagnostic, Error, FileItem, FormatOptions, Imported, Input, Reading, Value,
+    Data, Diagnostic, Error, FileItem, FormatOptions, Imported, Input, Reading,
 };
 use std::collections::HashMap;
 use std::path::Path as FilePath;
@@ -47,10 +47,11 @@ pub(crate) fn read(
     reading: &Reading<'_>,
 ) -> Result<Imported, Error> {
     reading.check()?;
-    let embed = options::option(chosen, options::EMBED, Value::bool)?;
+    let named = Arc::new(Named::new(input, chosen, reading));
     let held = Held::new(input.held()?);
     let stage_options = StageOptions {
-        cancel: Some(reading.cancel.shared_flag()),
+        budget: reading.budget.clone(),
+        disk: Some(named.clone()),
         ..StageOptions::default()
     };
     let bytes = Bytes::shared(held.buffer.clone());
@@ -67,7 +68,7 @@ pub(crate) fn read(
     let keys: Vec<Arc<str>> = (scene.materials.iter())
         .map(|m| Arc::from(m.path.to_string()))
         .collect();
-    let mut files = Files::new(&scene, &held, input.path().is_some(), embed);
+    let mut files = Files::new(&scene, &held, &named);
     let mut warnings = scene.warnings.clone();
     let mut looks = Materials::default();
     let single = single_sided(&scene);
@@ -100,7 +101,6 @@ pub(crate) fn read(
         at.push(placed);
     }
     let Walk { items, images, .. } = walk;
-    warnings.append(&mut files.warnings);
     looks.images = images;
     let mut all = Vec::with_capacity(items.len() + 1);
     if !looks.materials.is_empty() || !looks.images.is_empty() {
@@ -114,9 +114,11 @@ pub(crate) fn read(
         item.parent = item.parent.map(|p| p + shift);
         item
     }));
+    let mut warnings = said(warnings);
+    warnings.extend(named.warnings());
     Ok(Imported {
         items: all,
-        warnings: said(warnings),
+        warnings,
     })
 }
 
@@ -265,7 +267,7 @@ impl Walk<'_, '_> {
             }
             NodeKind::Light(light) => {
                 let scale = self.shaping.space.scale;
-                let image = light.texture.as_ref().map(|path| self.image(path));
+                let image = light.texture.as_ref().and_then(|path| self.image(path));
                 match lights::light(light, scale, image, self.reading.colors) {
                     Ok(light) => standard::light().wrap(light),
                     Err(e) => return self.left_out(node, &e),
@@ -288,9 +290,10 @@ impl Walk<'_, '_> {
         Ok(None)
     }
 
-    /// `op:` and the key of the image the file at `path` is, made once.
-    fn image(&mut self, path: &Token) -> String {
-        let source = ImageSource::new(self.files.file(path), Default::default());
+    /// `op:` and the key of the image the file at `path` is, made once;
+    /// none for a file left unresolved.
+    fn image(&mut self, path: &Token) -> Option<String> {
+        let source = ImageSource::new(self.files.file(path)?, Default::default());
         let mut key = path.to_string();
         if self.shaping.keys.iter().any(|k| **k == *key) {
             key.push_str(".image");
@@ -304,7 +307,7 @@ impl Walk<'_, '_> {
                 source,
             });
         }
-        format!("{OP}{key}")
+        Some(format!("{OP}{key}"))
     }
 
     /// An instance of prototype `p` where its prim is, naming `material`

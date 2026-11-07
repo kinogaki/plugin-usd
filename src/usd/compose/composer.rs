@@ -13,7 +13,6 @@
 //! in strength order.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use super::Problems;
 use super::graph::{ArcType, PrimIndex};
@@ -31,6 +30,11 @@ pub const ANONYMOUS_SESSION: &str = "anon:session.usda";
 /// The most prim indexes built in one composition before giving up, and
 /// the deepest nesting of arc builds.
 const MOST_NESTED_BUILDS: usize = 512;
+
+/// The most nodes one prim index holds. Arcs that meet again (a diamond of
+/// references) each bring their own nodes, as in Pcp, so a few levels of
+/// them double the nodes level by level; past this many the index fails.
+const MOST_NODES: usize = 1 << 16;
 
 /// A composition: the layers and layer stacks it opened, its root layer
 /// stack, and the indexes of the root stack's prims (each once).
@@ -56,8 +60,6 @@ pub struct Composer {
     cache: PathMap<Arc<PrimIndex>>,
     /// Nested builds under way, against runaway recursion.
     nesting: usize,
-    /// Raised once the stage is no longer wanted (its options').
-    pub(super) cancel: Option<Arc<AtomicBool>>,
 }
 
 /// A reference or payload to a file of a format composition does not read
@@ -126,14 +128,23 @@ impl Composer {
             foreign: Vec::new(),
             cache: PathMap::default(),
             nesting: 0,
-            cancel: None,
         })
     }
 
     /// `Err` of kind [`Cancelled`](crate::usd::ErrorKind::Cancelled) once the
     /// stage is no longer wanted.
     pub(super) fn check(&self) -> Result<()> {
-        super::stage::cancelled(self.cancel.as_deref())
+        Ok(self.layers.budget().check()?)
+    }
+
+    /// `Err` once `index` holds more nodes than one may.
+    pub(super) fn admit(index: &PrimIndex) -> Result<()> {
+        match index.nodes.len() <= MOST_NODES {
+            true => Ok(()),
+            false => Err(Error::limit(format!(
+                "a prim index of more than {MOST_NODES} nodes"
+            ))),
+        }
     }
 
     /// The root layer's index.
@@ -164,6 +175,8 @@ impl Composer {
         cull(&mut built, self.root_stack);
         built.instanceable = self.is_instanceable(&built);
         let made = Arc::new(finalized(&built));
+        let size = size_of::<super::graph::Node>() * made.nodes.len();
+        self.layers.budget().allocate(size as u64)?;
         self.cache.insert(path.clone(), made.clone());
         Ok(made)
     }
@@ -325,6 +338,7 @@ impl Composer {
     /// nodes' own tasks.
     fn run_tasks(&mut self, indexer: &mut Indexer<'_>) -> Result<()> {
         while let Some(task) = indexer.pop() {
+            self.check()?;
             match task.kind {
                 kind::RELOCATIONS => self.eval_relocations(indexer, task.node)?,
                 kind::IMPLIED_RELOCATIONS => self.eval_implied_relocations(indexer, task.node)?,

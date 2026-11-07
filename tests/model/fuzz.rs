@@ -1,6 +1,7 @@
 //! Malformed input: mutated text, crates and packages must fail with an
 //! error, never panic, and stay within their limits.
 
+use kinogaki_studio_api::format::ReadBudget;
 use kinogaki_usd::usd::package::Bytes;
 use kinogaki_usd::usd::scene::{self, ReadOptions};
 use kinogaki_usd::usd::{Stage, StageOptions};
@@ -50,7 +51,7 @@ fn mutate(bytes: &[u8], random: &mut Random) -> Vec<u8> {
 }
 
 fn survive(bytes: &[u8]) {
-    if let Ok(layer) = kinogaki_usd::usd::read_layer_bytes(bytes) {
+    if let Ok(layer) = kinogaki_usd::usd::read_layer_bytes(bytes, &ReadBudget::default()) {
         // Whatever reads must also print, and read as a scene that writes.
         let _ = kinogaki_usd::usd::text::write_usda(&layer);
         let _ = kinogaki_usd::usd::crate_file::write_usdc(&layer);
@@ -64,7 +65,11 @@ fn survive(bytes: &[u8]) {
 }
 
 fn layer() -> kinogaki_usd::usd::sdf::LayerData {
-    kinogaki_usd::usd::text::read_usda(include_bytes!("../fixtures/cube.usda")).unwrap()
+    kinogaki_usd::usd::text::read_usda(
+        include_bytes!("../fixtures/cube.usda"),
+        &ReadBudget::default(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -100,20 +105,22 @@ fn deep_nesting_is_refused() {
     for _ in 0..10_000 {
         text.extend_from_slice(b"{ dictionary a = ");
     }
-    let error = kinogaki_usd::usd::text::read_usda(&text).unwrap_err();
+    let error = kinogaki_usd::usd::text::read_usda(&text, &ReadBudget::default()).unwrap_err();
     assert!(error.position.is_some());
     let mut prims = b"#usda 1.0\n".to_vec();
     for _ in 0..10_000 {
         prims.extend_from_slice(b"def \"a\" {\n");
     }
-    assert!(kinogaki_usd::usd::text::read_usda(&prims).is_err());
+    assert!(kinogaki_usd::usd::text::read_usda(&prims, &ReadBudget::default()).is_err());
 }
 
 #[test]
 fn errors_name_the_line_and_column() {
-    let error =
-        kinogaki_usd::usd::text::read_usda(b"#usda 1.0\ndef Mesh \"a\"\n{\n    int x = 1.5.\n}\n")
-            .unwrap_err();
+    let error = kinogaki_usd::usd::text::read_usda(
+        b"#usda 1.0\ndef Mesh \"a\"\n{\n    int x = 1.5.\n}\n",
+        &ReadBudget::default(),
+    )
+    .unwrap_err();
     assert_eq!(error.position.map(|(line, _)| line), Some(4));
-    assert!(kinogaki_usd::usd::read_layer_bytes(b"nothing").is_err());
+    assert!(kinogaki_usd::usd::read_layer_bytes(b"nothing", &ReadBudget::default()).is_err());
 }

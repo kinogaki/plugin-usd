@@ -8,8 +8,8 @@
 //! file offset: dictionaries, list ops, time samples, vectors, references,
 //! payloads, relocates and nested values.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 
 use super::{Crate, invalid};
 use crate::usd::crate_file::element::CrateElement;
@@ -41,8 +41,27 @@ fn diagonal<const N: usize>(payload: u64, rows: usize) -> [f64; N] {
 }
 
 impl Crate<'_> {
-    /// The value `rep` holds (arrays included).
+    /// The value `rep` holds (arrays included); one held at a file offset
+    /// is decoded once, and shared by every rep naming it.
     pub(super) fn value(&self, rep: Rep, depth: usize) -> Result<Value> {
+        if rep.is_inlined() || (rep.is_array() && rep.payload() == 0) {
+            return self.unpacked(rep, depth);
+        }
+        let held = |decoded: &Mutex<HashMap<u64, Value>>| {
+            let decoded = decoded.lock().unwrap_or_else(|e| e.into_inner());
+            decoded.get(&rep.0).cloned()
+        };
+        if let Some(value) = held(&self.decoded) {
+            return Ok(value);
+        }
+        let value = self.unpacked(rep, depth)?;
+        let mut decoded = self.decoded.lock().unwrap_or_else(|e| e.into_inner());
+        decoded.insert(rep.0, value.clone());
+        Ok(value)
+    }
+
+    /// The value `rep` holds, decoded from the file.
+    fn unpacked(&self, rep: Rep, depth: usize) -> Result<Value> {
         if rep.is_array_edit() {
             return Err(Error::unsupported("array edit values are not supported"));
         }

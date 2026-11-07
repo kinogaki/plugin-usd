@@ -17,7 +17,7 @@ use super::layer_stack::valid_offset;
 use super::map::{MapFunction, namespace_depth};
 use super::relocations::relocation_pairs;
 use super::tasks::{Frame, Indexer, kind};
-use crate::usd::error::Result;
+use crate::usd::error::{Error, Result};
 use crate::usd::sdf::{LayerOffset, ListOp, Path, Value, field};
 
 /// How `_AddArc` adds a node (`_ArcOptions`).
@@ -390,6 +390,12 @@ impl Composer {
         ) {
             return Ok(None);
         }
+        let deepest = self.layers.budget().limits().depth;
+        if arc_depth(&indexer.index, parent, indexer.frame) >= deepest {
+            return Err(Error::limit(format!(
+                "composition arcs nest deeper than {deepest}"
+            )));
+        }
         let added = if !options.ancestral {
             let mut node = Node::new(stack, path.clone(), kind, map);
             node.origin = origin;
@@ -465,6 +471,7 @@ impl Composer {
         if path.is_absolute_root() {
             indexer.index.inert_subtree(added);
         }
+        Composer::admit(&indexer.index)?;
         Ok(Some(added))
     }
 
@@ -590,6 +597,22 @@ fn implied_under_relocate(
                 level = up.previous;
             }
         }
+    }
+}
+
+/// How many arcs lead from the root of the outermost build to `parent`,
+/// through every stack frame: what an arc from it nests under. The node
+/// trees' walks recurse this deep.
+fn arc_depth(index: &PrimIndex, parent: u32, frame: Option<&Frame<'_>>) -> usize {
+    let mut depth = 0;
+    let (mut graph, mut node, mut level) = (index, Some(parent), frame);
+    loop {
+        while let Some(at) = node {
+            depth += 1;
+            node = graph.node(at).parent;
+        }
+        let Some(up) = level else { return depth };
+        (graph, node, level) = (up.index, Some(up.parent), up.previous);
     }
 }
 

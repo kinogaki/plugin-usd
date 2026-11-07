@@ -5,16 +5,17 @@
 //! on demand prim by prim, and flattened into one layer.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::assets;
 use super::composer::{ANONYMOUS_SESSION, Composer, ForeignArc};
 use super::flatten::{FlattenOptions, flatten_stage};
 use super::graph::PrimIndex;
 use super::layers::Layers;
-use crate::usd::error::{Error, Result};
+use crate::usd::error::Result;
 use crate::usd::package::Bytes;
 use crate::usd::sdf::{LayerData, Path, Token, Value, field};
+use kinogaki_studio_api::format::ReadBudget;
+use kinogaki_studio_api::format::files::Named;
 
 /// What a stage opens with.
 #[derive(Clone, Debug, Default)]
@@ -32,58 +33,58 @@ pub struct StageOptions {
     /// Variant fallbacks, (set, selection), preferred first, for sets with
     /// no authored selection.
     pub variant_fallbacks: Vec<(String, String)>,
-    /// Raised once the stage is no longer wanted: flattening and reading
-    /// its scene then stop with a [`Cancelled`](crate::usd::ErrorKind::Cancelled)
-    /// error.
-    pub cancel: Option<Arc<AtomicBool>>,
+    /// What composing may spend reading layers, and its cancellation:
+    /// composing, flattening and reading its scene stop with a
+    /// [`Cancelled`](crate::usd::ErrorKind::Cancelled) error once it is
+    /// raised.
+    pub budget: ReadBudget,
+    /// The files on disk the stage may read (its layers, the packages they
+    /// name), found by the SDK's one rule: none reads nothing from disk.
+    pub disk: Option<Arc<Named>>,
 }
 
 /// A composed stage.
 pub struct Stage {
     composer: Composer,
-    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Stage {
-    /// Open the stage rooted at the layer `path`, every payload loaded.
-    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Stage> {
-        Stage::open_with(path, &StageOptions::default())
-    }
-
-    /// Open the stage rooted at the layer `path` with `options`.
-    pub fn open_with(path: impl AsRef<std::path::Path>, options: &StageOptions) -> Result<Stage> {
+    /// Open the stage rooted at the layer `path` on disk, it and every
+    /// file it names read through `options.disk`.
+    pub fn open(path: impl AsRef<std::path::Path>, options: &StageOptions) -> Result<Stage> {
         let identifier = assets::absolute(&path.as_ref().to_string_lossy());
-        Stage::compose(Layers::on_disk(), &identifier, options)
+        let layers = Layers::new(options.disk.clone(), options.budget.clone());
+        Stage::compose(layers, &identifier, options)
     }
 
     /// Open the stage rooted at the layer `path` with `options`, its bytes
     /// given (read once by the caller); every other file it names is read
-    /// from disk.
+    /// from disk through `options.disk`.
     pub fn open_held(
         path: impl AsRef<std::path::Path>,
         bytes: Bytes,
         options: &StageOptions,
     ) -> Result<Stage> {
         let identifier = assets::absolute(&path.as_ref().to_string_lossy());
-        let mut layers = Layers::on_disk();
+        let mut layers = Layers::new(options.disk.clone(), options.budget.clone());
         layers.hold(&identifier, bytes);
         Stage::compose(layers, &identifier, options)
     }
 
     /// Open the stage rooted at a file given in memory, `bytes` named
     /// `name` (a usda, usdc or usdz by its signature). It has no place on
-    /// disk, so it reads no file beside it: what it names outside itself
-    /// (or, for a package, outside the package) is missing.
+    /// disk, so it reads no file beside it, whatever `options.disk` says:
+    /// what it names outside itself (or, for a package, outside the
+    /// package) is missing.
     pub fn open_memory(name: &str, bytes: Bytes, options: &StageOptions) -> Result<Stage> {
         let identifier = assets::normalize(&format!("/{name}"));
-        let mut layers = Layers::in_memory();
+        let mut layers = Layers::new(None, options.budget.clone());
         layers.hold(&identifier, bytes);
         Stage::compose(layers, &identifier, options)
     }
 
     fn compose(layers: Layers, identifier: &str, options: &StageOptions) -> Result<Stage> {
         let mut composer = Composer::new(layers, identifier, Some(ANONYMOUS_SESSION))?;
-        composer.cancel = options.cancel.clone();
         for selection in &options.variants {
             composer.select_variants_at(selection)?;
         }
@@ -96,21 +97,19 @@ impl Stage {
         for (set, selection) in &options.variant_fallbacks {
             composer.add_variant_fallback(set, selection);
         }
-        Ok(Stage {
-            composer,
-            cancel: options.cancel.clone(),
-        })
+        Ok(Stage { composer })
     }
 
     /// `Err` of kind [`Cancelled`](crate::usd::ErrorKind::Cancelled) once its
-    /// [`StageOptions::cancel`] is raised.
+    /// budget's cancellation is raised.
     pub fn check(&self) -> Result<()> {
-        cancelled(self.cancel.as_deref())
+        Ok(self.budget().check()?)
     }
 
-    /// What raises its cancellation ([`StageOptions::cancel`]).
-    pub(crate) fn cancel(&self) -> Option<Arc<AtomicBool>> {
-        self.cancel.clone()
+    /// What reading it may spend, and its cancellation
+    /// ([`StageOptions::budget`]).
+    pub fn budget(&self) -> &ReadBudget {
+        self.composer.layers.budget()
     }
 
     /// The bytes of the file `identifier` names, when the stage holds them:
@@ -120,9 +119,9 @@ impl Stage {
         self.composer.layers.bytes(identifier)
     }
 
-    /// Whether the file `identifier` names exists: held, or on disk.
-    pub fn exists(&self, identifier: &str) -> bool {
-        self.composer.layers.exists(identifier)
+    /// Whether it reads files on disk ([`StageOptions::disk`]).
+    pub fn reads_disk(&self) -> bool {
+        self.composer.layers.reads_disk()
     }
 
     /// The arcs met so far to files of a format composition does not read
@@ -216,14 +215,5 @@ impl Stage {
         self.composer
             .layers
             .time_codes_per_second(self.composer.root_layer_index())
-    }
-}
-
-/// `Err` of kind [`Cancelled`](crate::usd::ErrorKind::Cancelled) once `cancel`
-/// is raised.
-pub(crate) fn cancelled(cancel: Option<&AtomicBool>) -> Result<()> {
-    match cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
-        true => Err(Error::cancelled()),
-        false => Ok(()),
     }
 }

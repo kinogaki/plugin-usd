@@ -17,6 +17,7 @@ mod value_type;
 pub use half::Half;
 pub use layer::{LayerData, Spec, SpecType, field};
 pub use list_op::{ListOp, ListPart};
+pub(crate) use path::MOST_DEPTH as MOST_PATH_DEPTH;
 pub use path::{Path, PathHasher, PathKind, PathMap};
 pub use token::Token;
 pub(crate) use value::attribute_kinds;

@@ -241,7 +241,7 @@ fn damaged_files_fail_and_a_cancelled_read_stops() {
     let stop = CancelToken::default();
     stop.cancel();
     let cancelled = Reading {
-        cancel: stop,
+        budget: kinogaki_studio_api::format::ReadBudget::default().cancelled_by(stop),
         ..Reading::new(Purpose::Objects, metres(), &Unconverted)
     };
     let input = Input::memory("cube.usdc", &usdc);
@@ -252,7 +252,7 @@ fn damaged_files_fail_and_a_cancelled_read_stops() {
 }
 
 #[test]
-fn the_import_dialog_offers_embed_textures_off() {
+fn the_import_dialog_offers_embed_textures_and_files_outside_off() {
     let options = Usd.options();
     assert_eq!(options.get("embed"), Some(&Value::Bool(false)));
     let schema = Usd.schema(&FormatOptions::new(), Purpose::Objects);
@@ -261,6 +261,6 @@ fn the_import_dialog_offers_embed_textures_off() {
             .parameters()
             .map(|p| p.name.as_str())
             .collect::<Vec<_>>(),
-        ["embed"]
+        ["embed", "outside"]
     );
 }

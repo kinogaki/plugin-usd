@@ -10,8 +10,6 @@
 //! The scene's warnings start with what composing the stage reported.
 
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::light::LightKind;
 use super::values::{Time, token_at};
@@ -25,9 +23,7 @@ use crate::usd::error::Result;
 use crate::usd::sdf::{LayerData, Path, PathMap, Specifier, Token, Value, field};
 use crate::usd::shade::{self, Material, MtlxDocument};
 use crate::usd::{FlattenOptions, Stage};
-
-/// The deepest prim nesting walked.
-const MOST_DEPTH: usize = 512;
+use kinogaki_studio_api::format::ReadBudget;
 
 /// The most warnings a read keeps.
 const MOST_WARNINGS: usize = 1000;
@@ -65,9 +61,9 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
         })?),
     };
     let anchor = stage.root_identifier().to_owned();
-    let cancel = stage.cancel();
+    let budget = stage.budget().clone();
     let mut walker = Walker {
-        cancel,
+        budget: &budget,
         layer: flattened.as_ref().unwrap_or_else(|| stage.root_layer()),
         foreign: stage.foreign_arcs(),
         options,
@@ -125,15 +121,16 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
 }
 
 /// Where the asset `path` names is: held bytes (a package's entry, a file
-/// given in memory), a file on disk, or nowhere.
+/// given in memory), a file on disk (when the stage reads disk; whoever
+/// reads it finds it there), or nowhere.
 fn asset_source(stage: &mut Stage, path: &str) -> AssetSource {
     if let Some(bytes) = stage.bytes(path) {
         return AssetSource::Bytes(bytes);
     }
-    if assets::package_split(path).is_none() && stage.exists(path) {
-        return AssetSource::File(path.into());
+    match assets::package_split(path).is_none() && stage.reads_disk() {
+        true => AssetSource::File(path.into()),
+        false => AssetSource::Missing,
     }
-    AssetSource::Missing
 }
 
 /// What a prim takes from its ancestors.
@@ -172,8 +169,8 @@ impl AssetPaths<'_> {
 }
 
 struct Walker<'a> {
-    /// Raised once the scene is no longer wanted: the walk stops.
-    cancel: Option<Arc<AtomicBool>>,
+    /// Its cancellation stops the walk; its depth bounds the prims walked.
+    budget: &'a ReadBudget,
     layer: &'a LayerData,
     /// Arcs to MaterialX documents, which composition leaves to us.
     foreign: &'a [ForeignArc],
@@ -228,14 +225,10 @@ impl Walker<'_> {
         prototype: bool,
         out: &mut Vec<Node>,
     ) {
-        if self
-            .cancel
-            .as_deref()
-            .is_some_and(|c| c.load(Ordering::Relaxed))
-        {
+        if self.budget.cancel().is_cancelled() {
             return;
         }
-        if inherited.depth > MOST_DEPTH {
+        if inherited.depth > self.budget.limits().depth {
             self.warn(format!("{path}: prims nest too deeply; left out"));
             return;
         }
@@ -530,7 +523,7 @@ impl Walker<'_> {
     /// Every defined Material prim beneath `prim` (a library's unbound
     /// materials too), outside prototypes.
     fn materials_everywhere(&mut self, prim: &Path, depth: usize) {
-        if depth > MOST_DEPTH {
+        if depth > self.budget.limits().depth {
             return;
         }
         let Some(spec) = self.layer.spec(prim) else {

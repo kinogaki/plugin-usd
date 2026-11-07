@@ -6,7 +6,9 @@
 //! first, strongest first. Every layer carries the offset mapping its times
 //! into the root's: its sublayer offset composed with its parent's, and
 //! scaled when its timeCodesPerSecond differs. A sublayer that is missing or
-//! already an ancestor (a cycle) is skipped with an error.
+//! already an ancestor (a cycle) is skipped with an error; one already in
+//! the stack, stronger, is skipped (its opinions are there), so a web of
+//! layers naming one another costs each layer once.
 //!
 //! A stack's expression variables are the root layer's
 //! `expressionVariables`, the session layer's over them, and those of the
@@ -19,11 +21,9 @@ use super::assets;
 use super::expressions::{evaluate_to_string, is_expression};
 use super::layers::Layers;
 use super::relocations::{Relocate, compute_relocations};
-use crate::usd::error::{Error, Result};
+use crate::usd::error::Result;
 use crate::usd::sdf::{Dictionary, LayerOffset, Token, Value, field};
-
-/// The deepest sublayer nesting accepted.
-const MOST_SUBLAYER_DEPTH: usize = 256;
+use std::collections::HashSet;
 
 /// One layer stack.
 #[derive(Clone, Debug)]
@@ -112,7 +112,7 @@ impl Stacks {
             overrides,
         };
         self.compose_variables(layers, &mut stack);
-        let mut seen = Vec::new();
+        let mut seen = Seen::default();
         let mut root_offset = LayerOffset::IDENTITY;
         if let Some(owner) = session {
             let session_rate = layers.time_codes_per_second(owner);
@@ -191,6 +191,14 @@ fn over(into: &mut Dictionary, stronger: &Dictionary) {
     }
 }
 
+/// The layers a stack's build has met: its ancestors, which a sublayer
+/// naming one would cycle back to, and every layer stacked.
+#[derive(Default)]
+struct Seen {
+    ancestors: Vec<usize>,
+    stacked: HashSet<usize>,
+}
+
 /// Whether a session layer's own rate governs the stack: it authors
 /// timeCodesPerSecond, or the root does not and the session authors
 /// framesPerSecond.
@@ -210,13 +218,14 @@ fn build(
     rate: f64,
     session_owner: Option<&Token>,
     stack: &mut LayerStack,
-    seen: &mut Vec<usize>,
+    seen: &mut Seen,
     problems: &mut Problems,
 ) -> Result<()> {
-    if seen.len() > MOST_SUBLAYER_DEPTH {
-        return Err(Error::limit("sublayers nested more than 256 deep"));
+    if !seen.stacked.insert(layer) {
+        return Ok(());
     }
-    seen.push(layer);
+    layers.budget().nest(seen.ancestors.len())?;
+    seen.ancestors.push(layer);
     stack.layers.push(layer);
     stack.offsets.push(offset);
     let paths: Vec<Token> = layers
@@ -246,7 +255,7 @@ fn build(
             problems.add(format!("Could not load sublayer @{identifier}@"));
             continue;
         };
-        if seen.contains(&sublayer) {
+        if seen.ancestors.contains(&sublayer) {
             problems.add(format!("Sublayer cycle through @{identifier}@"));
             continue;
         }
@@ -285,7 +294,7 @@ fn build(
             problems,
         )?;
     }
-    seen.pop();
+    seen.ancestors.pop();
     Ok(())
 }
 

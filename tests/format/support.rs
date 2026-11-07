@@ -37,6 +37,20 @@ impl Drop for Scratch {
     }
 }
 
+/// The stage rooted at the layer `path` on disk, reading the files in its
+/// folder and below as Import does.
+pub fn stage(path: &Path) -> kinogaki_usd::usd::Stage {
+    use kinogaki_studio_api::format::files::Named;
+    use kinogaki_usd::usd::{Stage, StageOptions};
+    let reading = Reading::new(Purpose::Objects, metres(), &Unconverted);
+    let disk = Named::new(&Input::file(path), &FormatOptions::new(), &reading);
+    let options = StageOptions {
+        disk: Some(std::sync::Arc::new(disk)),
+        ..StageOptions::default()
+    };
+    Stage::open(path, &options).unwrap()
+}
+
 /// Metres, Y up.
 pub fn metres() -> Units {
     Units::new(1.0, UpAxis::Y).unwrap()
@@ -45,8 +59,13 @@ pub fn metres() -> Units {
 /// The file at `path` read into `units`, embedding textures when `embed`.
 pub fn read_file(path: &Path, units: Units, embed: bool) -> Imported {
     let options = FormatOptions::from([("embed".to_owned(), Value::Bool(embed))]);
+    read_with(path, units, &options)
+}
+
+/// The file at `path` read into `units` with `options`.
+pub fn read_with(path: &Path, units: Units, options: &FormatOptions) -> Imported {
     let reading = Reading::new(Purpose::Objects, units, &Unconverted);
-    Usd.read(&Input::file(path), &options, &reading).unwrap()
+    Usd.read(&Input::file(path), options, &reading).unwrap()
 }
 
 /// `items` written to `path` in `units`, with what it said.

@@ -119,6 +119,13 @@ pub fn compress(input: &[u8], out: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+/// The most bytes `packed` bytes of LZ4 decompress to: a sequence of no
+/// literals, its two offset bytes and `k` length bytes copies at most
+/// `19 + 255·k` bytes, so no input gives more than 255 bytes a byte.
+pub fn most_decompressed(packed: u64) -> u64 {
+    packed.saturating_mul(255)
+}
+
 /// Decompress one LZ4 block from `input`, appending at most `most` bytes to
 /// `out`. Fails on a damaged block or one that would exceed `most`.
 pub fn decompress(input: &[u8], out: &mut Vec<u8>, most: usize) -> Result<()> {

@@ -15,6 +15,7 @@ pub use bytes::{Buffer, Bytes};
 
 use crate::usd::error::{Error, Result};
 use crate::usd::sdf::LayerData;
+use kinogaki_studio_api::format::ReadBudget;
 
 /// The alignment usdz requires of every entry's data.
 pub const ALIGNMENT: usize = 64;
@@ -77,23 +78,36 @@ impl Package {
         let inner = path[bracket + 1..]
             .strip_suffix(']')
             .ok_or_else(|| Error::invalid(format!("not a package path: {path}")))?;
-        let nested = Package::open(self.entry(&path[..bracket])?)?;
-        nested.find_nested(inner, depth + 1)
+        let (outer, inner_path) = (&path[..bracket], inner);
+        if !is_package(outer) {
+            return Err(Error::invalid(format!(
+                "{outer} is no usdz: only usdz files hold packaged files"
+            )));
+        }
+        let nested = Package::open(self.entry(outer)?)?;
+        nested.find_nested(inner_path, depth + 1)
     }
 
-    /// The root layer: the first entry, read by its signature.
-    pub fn root_layer(&self) -> Result<LayerData> {
-        read_usdz(&self.bytes)
+    /// The root layer: the first entry, read by its signature within
+    /// `budget`.
+    pub fn root_layer(&self, budget: &ReadBudget) -> Result<LayerData> {
+        read_usdz(&self.bytes, budget)
     }
 }
 
-/// Read the root layer of the package `data`.
-pub fn read_usdz(data: &[u8]) -> Result<LayerData> {
-    root_of(data, 0)
+/// Whether `name` (a file name or path) names a package: it ends in
+/// `.usdz`, whatever its case. Only such files are opened as packages.
+pub fn is_package(name: &str) -> bool {
+    name.len() > 5 && name[name.len() - 5..].eq_ignore_ascii_case(".usdz")
+}
+
+/// Read the root layer of the package `data`, within `budget`.
+pub fn read_usdz(data: &[u8], budget: &ReadBudget) -> Result<LayerData> {
+    root_of(data, 0, budget)
 }
 
 /// The root layer of `data`, a package first in a package opened in turn.
-fn root_of(data: &[u8], depth: usize) -> Result<LayerData> {
+fn root_of(data: &[u8], depth: usize, budget: &ReadBudget) -> Result<LayerData> {
     if depth > MOST_NESTING {
         return Err(Error::limit("packages nested too deeply"));
     }
@@ -102,10 +116,10 @@ fn root_of(data: &[u8], depth: usize) -> Result<LayerData> {
         .first()
         .ok_or_else(|| Error::invalid("an empty usdz package"))?;
     let bytes = zip::stored(data, root)?;
-    if root.name.ends_with(".usdz") {
-        return root_of(bytes, depth + 1);
+    if is_package(&root.name) {
+        return root_of(bytes, depth + 1, budget);
     }
-    crate::usd::layer_file::read_layer_bytes(bytes)
+    crate::usd::layer_file::read_layer_bytes(bytes, budget)
         .map_err(|error| error.in_file(root.name.clone()))
 }
 

@@ -25,7 +25,8 @@ pub struct Asset {
 pub enum AssetSource {
     /// Held: a package's entry, or bytes given to write.
     Bytes(Bytes),
-    /// A file on disk.
+    /// A file on disk, by its path: on reading, where the stage places it,
+    /// for whoever reads it to find there.
     File(PathBuf),
     /// Nowhere it could be found.
     Missing,

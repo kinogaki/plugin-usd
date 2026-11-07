@@ -67,7 +67,7 @@ struct Node {
 pub struct Path(Option<Arc<Node>>);
 
 /// The deepest path accepted, against hostile input.
-const MOST_DEPTH: u32 = 4096;
+pub(crate) const MOST_DEPTH: u32 = 4096;
 
 static ABSOLUTE_ROOT: LazyLock<Path> = LazyLock::new(|| Path::root_node(true));
 static RELATIVE_ROOT: LazyLock<Path> = LazyLock::new(|| Path::root_node(false));
@@ -488,74 +488,60 @@ impl Path {
         Ok(result)
     }
 
-    /// Write the path's text (as `SdfPath::GetString`).
+    /// Write the path's text (as `SdfPath::GetString`), root first: a loop
+    /// over its nodes, so a path of any depth writes on any stack.
     fn write_text(&self, out: &mut String) {
         let Some(node) = self.node() else { return };
         if node.kind == PathKind::Root {
             out.push(if node.absolute { '/' } else { '.' });
             return;
         }
-        self.write_node(out);
-    }
-
-    fn write_node(&self, out: &mut String) {
-        let Some(node) = self.node() else { return };
-        let parent = &node.parent;
-        match &node.element {
-            Element::Name(name) if node.kind == PathKind::Prim => {
-                if parent.is_absolute_root() {
-                    out.push('/');
-                } else if !parent.is_root() {
-                    parent.write_node(out);
-                    if parent.kind() == PathKind::Prim {
+        let mut chain = Vec::with_capacity(node.depth as usize);
+        let mut at = Some(node);
+        while let Some(node) = at.filter(|n| n.kind != PathKind::Root) {
+            chain.push(node);
+            at = node.parent.node();
+        }
+        for node in chain.into_iter().rev() {
+            let parent = &node.parent;
+            // Every element but a prim's name follows its parent as written;
+            // a prim's name follows a prim with a slash.
+            let prim_in_prim = node.kind == PathKind::Prim && parent.kind() == PathKind::Prim;
+            if parent.is_absolute_root() || prim_in_prim {
+                out.push('/');
+            }
+            match &node.element {
+                Element::Name(name) if node.kind == PathKind::Prim => out.push_str(name),
+                Element::Variant(set, variant) => {
+                    out.push('{');
+                    out.push_str(set);
+                    out.push('=');
+                    out.push_str(variant);
+                    out.push('}');
+                }
+                Element::Name(name) => {
+                    // `../.property`: a property of a parent step keeps a slash.
+                    if node.kind == PathKind::Property
+                        && parent.kind() == PathKind::Prim
+                        && parent.name() == ".."
+                    {
                         out.push('/');
                     }
+                    out.push('.');
+                    out.push_str(name);
                 }
-                out.push_str(name);
-            }
-            Element::Variant(set, variant) => {
-                parent.write_below(out);
-                out.push('{');
-                out.push_str(set);
-                out.push('=');
-                out.push_str(variant);
-                out.push('}');
-            }
-            Element::Name(name) => {
-                parent.write_below(out);
-                // `../.property`: a property of a parent step keeps a slash.
-                if node.kind == PathKind::Property
-                    && parent.kind() == PathKind::Prim
-                    && parent.name() == ".."
-                {
-                    out.push('/');
+                Element::Target(path) => {
+                    out.push_str(if node.kind == PathKind::Mapper {
+                        ".mapper["
+                    } else {
+                        "["
+                    });
+                    path.write_text(out);
+                    out.push(']');
                 }
-                out.push('.');
-                out.push_str(name);
+                Element::Expression => out.push_str(".expression"),
+                Element::Root => {}
             }
-            Element::Target(path) => {
-                parent.write_below(out);
-                out.push_str(if node.kind == PathKind::Mapper {
-                    ".mapper["
-                } else {
-                    "["
-                });
-                path.write_text(out);
-                out.push(']');
-            }
-            Element::Expression => {
-                parent.write_below(out);
-                out.push_str(".expression");
-            }
-            Element::Root => {}
-        }
-    }
-
-    fn write_below(&self, out: &mut String) {
-        if self.is_absolute_root() {
-            out.push('/');
-        } else if !self.is_root() {
-            self.write_node(out);
         }
     }
 
@@ -568,32 +554,50 @@ impl Path {
 }
 
 impl PartialEq for Path {
+    /// Node by node toward the root, until two share their parents: a loop,
+    /// so paths of any depth compare on any stack.
     fn eq(&self, other: &Path) -> bool {
-        match (&self.0, &other.0) {
-            (None, None) => true,
-            (Some(a), Some(b)) => {
-                if Arc::ptr_eq(a, b) {
-                    return true;
-                }
-                if a.hash != b.hash
-                    || a.depth != b.depth
-                    || a.kind != b.kind
-                    || a.absolute != b.absolute
-                {
-                    return false;
-                }
-                let same = match (&a.element, &b.element) {
-                    (Element::Root, Element::Root) | (Element::Expression, Element::Expression) => {
-                        true
+        let (mut left, mut right) = (self, other);
+        loop {
+            match (&left.0, &right.0) {
+                (None, None) => return true,
+                (Some(a), Some(b)) => {
+                    if Arc::ptr_eq(a, b) {
+                        return true;
                     }
-                    (Element::Name(x), Element::Name(y)) => x == y,
-                    (Element::Variant(s, v), Element::Variant(t, w)) => s == t && v == w,
-                    (Element::Target(x), Element::Target(y)) => x == y,
-                    _ => false,
-                };
-                same && a.parent == b.parent
+                    let same = a.hash == b.hash
+                        && a.depth == b.depth
+                        && a.kind == b.kind
+                        && a.absolute == b.absolute
+                        && match (&a.element, &b.element) {
+                            (Element::Root, Element::Root)
+                            | (Element::Expression, Element::Expression) => true,
+                            (Element::Name(x), Element::Name(y)) => x == y,
+                            (Element::Variant(s, v), Element::Variant(t, w)) => s == t && v == w,
+                            (Element::Target(x), Element::Target(y)) => x == y,
+                            _ => false,
+                        };
+                    if !same {
+                        return false;
+                    }
+                    (left, right) = (&a.parent, &b.parent);
+                }
+                _ => return false,
             }
-            _ => false,
+        }
+    }
+}
+
+/// A node frees the chain of parents only it held one at a time, so a path
+/// of any depth drops on any stack.
+impl Drop for Node {
+    fn drop(&mut self) {
+        let mut parent = std::mem::take(&mut self.parent);
+        while let Some(shared) = parent.0.take() {
+            match Arc::try_unwrap(shared) {
+                Ok(mut node) => parent = std::mem::take(&mut node.parent),
+                Err(_) => return,
+            }
         }
     }
 }

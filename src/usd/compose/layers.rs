@@ -6,18 +6,23 @@
 //! extension says. A layer that cannot be read is remembered as failed, with
 //! the reason.
 //!
-//! The files packages are read from are held once (every layer and asset
-//! of a package is a view of its bytes), beside files given in memory (an
-//! embedded file, which has no path), which stand in for files of their
-//! name.
+//! Files given in memory (the file read, an embedded file, which has no
+//! path) stand in for files of their name. Every other file is reached on
+//! disk through the SDK's one rule for the files a file names
+//! ([`Named`]: the read file's folder and below, regular files, within the
+//! read's budget); a composition given none reads nothing from disk. Only a
+//! `.usdz` opens as a package, and each package's file is read once (every
+//! layer and asset in it is a view of its bytes).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::assets;
 use crate::usd::error::{Error, Result};
-use crate::usd::package::{Bytes, Package};
+use crate::usd::package::{Bytes, Package, is_package};
 use crate::usd::sdf::{LayerData, Path, Token, Value, field};
+use kinogaki_studio_api::format::ReadBudget;
+use kinogaki_studio_api::format::files::Named;
 
 /// The most layers one composition opens, against hostile reference webs.
 const MOST_LAYERS: usize = 1 << 16;
@@ -32,33 +37,36 @@ struct Entry {
 pub struct Layers {
     entries: Vec<Entry>,
     by_identifier: HashMap<String, usize>,
-    /// Packages read, and files given in memory, by their identifier.
-    files: HashMap<String, Bytes>,
+    /// Files given in memory, by their identifier.
+    held: HashMap<String, Bytes>,
     packages: HashMap<String, Package>,
-    /// Whether files not held are read from disk (a composition of a file
-    /// given in memory reads none: it has no place on disk to name files
-    /// beside).
-    disk: bool,
+    /// The files on disk it may read; none reads nothing from disk.
+    disk: Option<Arc<Named>>,
+    budget: ReadBudget,
 }
 
 impl Layers {
-    /// Layers read from disk, and from the files held.
-    pub fn on_disk() -> Layers {
+    /// Layers read from the files held and, through `disk`, from disk,
+    /// within `budget`.
+    pub fn new(disk: Option<Arc<Named>>, budget: ReadBudget) -> Layers {
         Layers {
             entries: Vec::new(),
             by_identifier: HashMap::new(),
-            files: HashMap::new(),
+            held: HashMap::new(),
             packages: HashMap::new(),
-            disk: true,
+            disk,
+            budget,
         }
     }
 
-    /// Layers read from the files held alone.
-    pub fn in_memory() -> Layers {
-        Layers {
-            disk: false,
-            ..Layers::on_disk()
-        }
+    /// What reading may spend, and its cancellation.
+    pub fn budget(&self) -> &ReadBudget {
+        &self.budget
+    }
+
+    /// Whether files on disk are read.
+    pub fn reads_disk(&self) -> bool {
+        self.disk.is_some()
     }
 
     /// The identifier of layer `index`.
@@ -150,14 +158,14 @@ impl Layers {
     /// Hold `bytes` as the file `identifier` names: it is read from them,
     /// never from disk.
     pub fn hold(&mut self, identifier: &str, bytes: Bytes) {
-        self.files.insert(identifier.to_owned(), bytes);
+        self.held.insert(identifier.to_owned(), bytes);
     }
 
-    /// Whether the file an identifier names exists: held, or on disk (a
-    /// package's outer file).
+    /// Whether the file an identifier names exists: held, or on disk in
+    /// reach (a package's outer file).
     pub fn exists(&self, identifier: &str) -> bool {
         let outer = assets::outermost(identifier);
-        self.files.contains_key(outer) || (self.disk && std::path::Path::new(outer).is_file())
+        self.held.contains_key(outer) || self.on_disk(outer).is_some()
     }
 
     /// The bytes of the file `identifier` names when they are held: a file
@@ -165,19 +173,37 @@ impl Layers {
     /// none for a file on disk outside packages, or one that can't be read.
     pub fn bytes(&mut self, identifier: &str) -> Option<Bytes> {
         match assets::package_split(identifier) {
-            None => self.files.get(identifier).cloned(),
+            None => self.held.get(identifier).cloned(),
             Some((outer, inner)) => self.package(outer).ok()?.find(inner).ok(),
         }
     }
 
-    /// The package at `identifier` (an outer file), read once.
+    /// Where `identifier`, a plain file's, is on disk: a regular file in
+    /// reach, by its canonical path. None when nothing on disk is read.
+    fn on_disk(&self, identifier: &str) -> Option<std::path::PathBuf> {
+        self.disk.as_ref()?.file(identifier, None)
+    }
+
+    /// The bytes of the plain file `identifier`: held, else read from disk.
+    fn file_bytes(&self, identifier: &str) -> Result<Bytes> {
+        if let Some(bytes) = self.held.get(identifier) {
+            return Ok(bytes.clone());
+        }
+        let (Some(disk), Some(path)) = (&self.disk, self.on_disk(identifier)) else {
+            return Err(Error::io("no such file"));
+        };
+        Ok(Bytes::from(disk.read(&path)?))
+    }
+
+    /// The package at `identifier` (an outer file, a `.usdz`), read once.
     fn package(&mut self, identifier: &str) -> Result<&Package> {
         if !self.packages.contains_key(identifier) {
-            let bytes = match self.files.get(identifier) {
-                Some(bytes) => bytes.clone(),
-                None => Bytes::from(std::fs::read(identifier)?),
-            };
-            let package = Package::open(bytes)?;
+            if !is_package(identifier) {
+                return Err(Error::invalid(format!(
+                    "{identifier} is no usdz: only usdz files hold packaged files"
+                )));
+            }
+            let package = Package::open(self.file_bytes(identifier)?)?;
             self.packages.insert(identifier.to_owned(), package);
         }
         Ok(&self.packages[identifier])
@@ -185,18 +211,10 @@ impl Layers {
 
     /// Read the layer an identifier names.
     fn read(&mut self, identifier: &str) -> Result<LayerData> {
-        if !self.exists(identifier) {
-            return Err(Error::io("no such file"));
-        }
-        match assets::package_split(identifier) {
-            Some((outer, inner)) => {
-                let bytes = self.package(outer)?.find(inner)?;
-                crate::usd::read_layer_bytes(&bytes)
-            }
-            None => match self.files.get(identifier) {
-                Some(bytes) => crate::usd::read_layer_bytes(bytes),
-                None => crate::usd::read_layer(identifier),
-            },
-        }
+        let bytes = match assets::package_split(identifier) {
+            Some((outer, inner)) => self.package(outer)?.find(inner)?,
+            None => self.file_bytes(identifier)?,
+        };
+        crate::usd::read_layer_bytes(&bytes, &self.budget)
     }
 }
