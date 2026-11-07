@@ -10,6 +10,8 @@
 //! The scene's warnings start with what composing the stage reported.
 
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::light::LightKind;
 use super::values::{Time, token_at};
@@ -63,7 +65,9 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
         })?),
     };
     let anchor = stage.root_identifier().to_owned();
+    let cancel = stage.cancel();
     let mut walker = Walker {
+        cancel,
         layer: flattened.as_ref().unwrap_or_else(|| stage.root_layer()),
         foreign: stage.foreign_arcs(),
         options,
@@ -88,6 +92,7 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
     };
     walker.children(&Path::absolute_root(), None, top, false, &mut nodes);
     walker.materials_everywhere(&Path::absolute_root(), 0);
+    stage.check()?;
     let Walker {
         prototypes,
         materials,
@@ -167,6 +172,8 @@ impl AssetPaths<'_> {
 }
 
 struct Walker<'a> {
+    /// Raised once the scene is no longer wanted: the walk stops.
+    cancel: Option<Arc<AtomicBool>>,
     layer: &'a LayerData,
     /// Arcs to MaterialX documents, which composition leaves to us.
     foreign: &'a [ForeignArc],
@@ -221,6 +228,13 @@ impl Walker<'_> {
         prototype: bool,
         out: &mut Vec<Node>,
     ) {
+        if self
+            .cancel
+            .as_deref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
+        {
+            return;
+        }
         if inherited.depth > MOST_DEPTH {
             self.warn(format!("{path}: prims nest too deeply; left out"));
             return;

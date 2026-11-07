@@ -1,6 +1,4 @@
 //! What the tests share: stages from text, nodes by path, round trips.
-#![allow(dead_code)]
-
 use kinogaki_usd::usd::package::Bytes;
 use kinogaki_usd::usd::scene::{self, Mesh, Node, NodeKind, ReadOptions, Scene};
 use kinogaki_usd::usd::{Format, Stage, StageOptions, layer_bytes};

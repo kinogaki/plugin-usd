@@ -5,13 +5,14 @@
 //! on demand prim by prim, and flattened into one layer.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::assets;
 use super::composer::{ANONYMOUS_SESSION, Composer, ForeignArc};
 use super::flatten::{FlattenOptions, flatten_stage};
 use super::graph::PrimIndex;
 use super::layers::Layers;
-use crate::usd::error::Result;
+use crate::usd::error::{Error, Result};
 use crate::usd::package::Bytes;
 use crate::usd::sdf::{LayerData, Path, Token, Value, field};
 
@@ -31,11 +32,16 @@ pub struct StageOptions {
     /// Variant fallbacks, (set, selection), preferred first, for sets with
     /// no authored selection.
     pub variant_fallbacks: Vec<(String, String)>,
+    /// Raised once the stage is no longer wanted: flattening and reading
+    /// its scene then stop with a [`Cancelled`](crate::usd::ErrorKind::Cancelled)
+    /// error.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 /// A composed stage.
 pub struct Stage {
     composer: Composer,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Stage {
@@ -48,6 +54,20 @@ impl Stage {
     pub fn open_with(path: impl AsRef<std::path::Path>, options: &StageOptions) -> Result<Stage> {
         let identifier = assets::absolute(&path.as_ref().to_string_lossy());
         Stage::compose(Layers::on_disk(), &identifier, options)
+    }
+
+    /// Open the stage rooted at the layer `path` with `options`, its bytes
+    /// given (read once by the caller); every other file it names is read
+    /// from disk.
+    pub fn open_held(
+        path: impl AsRef<std::path::Path>,
+        bytes: Bytes,
+        options: &StageOptions,
+    ) -> Result<Stage> {
+        let identifier = assets::absolute(&path.as_ref().to_string_lossy());
+        let mut layers = Layers::on_disk();
+        layers.hold(&identifier, bytes);
+        Stage::compose(layers, &identifier, options)
     }
 
     /// Open the stage rooted at a file given in memory, `bytes` named
@@ -63,6 +83,7 @@ impl Stage {
 
     fn compose(layers: Layers, identifier: &str, options: &StageOptions) -> Result<Stage> {
         let mut composer = Composer::new(layers, identifier, Some(ANONYMOUS_SESSION))?;
+        composer.cancel = options.cancel.clone();
         for selection in &options.variants {
             composer.select_variants_at(selection)?;
         }
@@ -75,7 +96,21 @@ impl Stage {
         for (set, selection) in &options.variant_fallbacks {
             composer.add_variant_fallback(set, selection);
         }
-        Ok(Stage { composer })
+        Ok(Stage {
+            composer,
+            cancel: options.cancel.clone(),
+        })
+    }
+
+    /// `Err` of kind [`Cancelled`](crate::usd::ErrorKind::Cancelled) once its
+    /// [`StageOptions::cancel`] is raised.
+    pub fn check(&self) -> Result<()> {
+        cancelled(self.cancel.as_deref())
+    }
+
+    /// What raises its cancellation ([`StageOptions::cancel`]).
+    pub(crate) fn cancel(&self) -> Option<Arc<AtomicBool>> {
+        self.cancel.clone()
     }
 
     /// The bytes of the file `identifier` names, when the stage holds them:
@@ -181,5 +216,14 @@ impl Stage {
         self.composer
             .layers
             .time_codes_per_second(self.composer.root_layer_index())
+    }
+}
+
+/// `Err` of kind [`Cancelled`](crate::usd::ErrorKind::Cancelled) once `cancel`
+/// is raised.
+pub(crate) fn cancelled(cancel: Option<&AtomicBool>) -> Result<()> {
+    match cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+        true => Err(Error::cancelled()),
+        false => Ok(()),
     }
 }

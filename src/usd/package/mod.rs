@@ -11,7 +11,7 @@ mod bytes;
 mod crc32;
 pub mod zip;
 
-pub use bytes::Bytes;
+pub use bytes::{Buffer, Bytes};
 
 use crate::usd::error::{Error, Result};
 use crate::usd::sdf::LayerData;

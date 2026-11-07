@@ -23,19 +23,11 @@ todo = "deny"
 # The process's workers: large arrays parse, format, compress and decode on
 # them, within the host's one budget.
 kinogaki-studio-api = { path = "../../sdk/crates/api" }
+# MaterialX node definitions and the standard light and camera.
+kinogaki-render-api = { path = "../../sdk/crates/render-api" }
+# MaterialX's library: definitions and translation graphs.
+kinogaki-mtlx = { path = "../../sdk/crates/mtlx" }
 
-[profile.dev]
-opt-level = 1
-
-[profile.dev.package."*"]
-opt-level = 2
-
-# Corpus, fuzz and round-trip tests parse large layers; keep test builds fast.
-[profile.test]
-opt-level = 2
-
-[profile.release]
-lto = "thin"
-codegen-units = 1
-debug = "line-tables-only"
-overflow-checks = true
+[dev-dependencies]
+# The SDK's color service that converts nothing.
+kinogaki-studio-api-testing = { path = "../../sdk/crates/api-testing" }

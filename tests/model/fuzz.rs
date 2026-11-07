@@ -64,12 +64,12 @@ fn survive(bytes: &[u8]) {
 }
 
 fn layer() -> kinogaki_usd::usd::sdf::LayerData {
-    kinogaki_usd::usd::text::read_usda(include_bytes!("fixtures/cube.usda")).unwrap()
+    kinogaki_usd::usd::text::read_usda(include_bytes!("../fixtures/cube.usda")).unwrap()
 }
 
 #[test]
 fn mutated_text_never_panics() {
-    let text = include_bytes!("fixtures/cube.usda");
+    let text = include_bytes!("../fixtures/cube.usda");
     let mut random = Random(0x1234_5678);
     for _ in 0..20_000 {
         survive(&mutate(text, &mut random));

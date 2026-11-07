@@ -13,6 +13,7 @@
 //! in strength order.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use super::Problems;
 use super::graph::{ArcType, PrimIndex};
@@ -55,6 +56,8 @@ pub struct Composer {
     cache: PathMap<Arc<PrimIndex>>,
     /// Nested builds under way, against runaway recursion.
     nesting: usize,
+    /// Raised once the stage is no longer wanted (its options').
+    pub(super) cancel: Option<Arc<AtomicBool>>,
 }
 
 /// A reference or payload to a file of a format composition does not read
@@ -123,7 +126,14 @@ impl Composer {
             foreign: Vec::new(),
             cache: PathMap::default(),
             nesting: 0,
+            cancel: None,
         })
+    }
+
+    /// `Err` of kind [`Cancelled`](crate::usd::ErrorKind::Cancelled) once the
+    /// stage is no longer wanted.
+    pub(super) fn check(&self) -> Result<()> {
+        super::stage::cancelled(self.cancel.as_deref())
     }
 
     /// The root layer's index.

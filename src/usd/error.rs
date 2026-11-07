@@ -13,6 +13,8 @@ pub enum ErrorKind {
     Limit,
     /// Reading or writing a file failed.
     Io,
+    /// The work was no longer wanted ([`StageOptions::cancel`](crate::usd::StageOptions::cancel)).
+    Cancelled,
 }
 
 /// A failure with a message, and the file and line it happened at when known.
@@ -59,6 +61,11 @@ impl Error {
     /// A file system failure.
     pub fn io(message: impl Into<String>) -> Error {
         Error::new(ErrorKind::Io, message)
+    }
+
+    /// Work stopped because it was no longer wanted.
+    pub fn cancelled() -> Error {
+        Error::new(ErrorKind::Cancelled, "cancelled")
     }
 
     /// The same error, located in `file` (unless already located).

@@ -1,9 +1,7 @@
 //! Instancing: instanceable prims share prototypes, point instancers place
 //! theirs, and both write back.
 
-mod common;
-
-use common::{node, paths, round_trips, scene_of};
+use crate::common::{node, paths, round_trips, scene_of};
 use kinogaki_usd::usd::scene::{Matrix4d, NodeKind};
 
 const INSTANCEABLE: &[u8] = br#"#usda 1.0
@@ -86,7 +84,7 @@ fn instances_write_as_copies() {
                 "/Shelf/Two/Part"
             ]
         );
-        let copy = common::mesh(&again, "/Shelf/Two/Part");
+        let copy = crate::common::mesh(&again, "/Shelf/Two/Part");
         let NodeKind::Mesh(part) = &scene.prototypes[0].nodes[0].kind else {
             panic!("a mesh")
         };

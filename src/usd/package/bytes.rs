@@ -5,18 +5,22 @@ use std::fmt;
 use std::ops::{Deref, Range};
 use std::sync::Arc;
 
+/// A buffer bytes are views of: a `Vec<u8>` read here, or bytes another
+/// owner holds (a file a host keeps in memory), shared as they are.
+pub type Buffer = Arc<dyn AsRef<[u8]> + Send + Sync>;
+
 /// Bytes held in a shared buffer: a whole file, or a range of one (a
 /// package's entry). Cloning shares the buffer.
 #[derive(Clone)]
 pub struct Bytes {
-    buffer: Arc<Vec<u8>>,
+    buffer: Buffer,
     range: Range<usize>,
 }
 
 impl Bytes {
     /// All of `buffer`.
-    pub fn shared(buffer: Arc<Vec<u8>>) -> Bytes {
-        let range = 0..buffer.len();
+    pub fn shared(buffer: Buffer) -> Bytes {
+        let range = 0..(*buffer).as_ref().len();
         Bytes { buffer, range }
     }
 
@@ -34,7 +38,7 @@ impl Bytes {
 
     /// The buffer these bytes are a view of, and where in it they lie: what
     /// a holder of the whole buffer shares instead of copying.
-    pub fn buffer(&self) -> (&Arc<Vec<u8>>, Range<usize>) {
+    pub fn buffer(&self) -> (&Buffer, Range<usize>) {
         (&self.buffer, self.range.clone())
     }
 }
@@ -49,7 +53,7 @@ impl Deref for Bytes {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        &self.buffer[self.range.clone()]
+        &(*self.buffer).as_ref()[self.range.clone()]
     }
 }
 

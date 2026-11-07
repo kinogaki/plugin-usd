@@ -1,9 +1,7 @@
 //! The scene of a stage: meshes, shapes, curves, points, cameras and
 //! lights read as authored, and written back.
 
-mod common;
-
-use common::{fixture, mesh, node, paths, round_trips, scene_of, scene_with};
+use crate::common::{fixture, mesh, node, paths, round_trips, scene_of, scene_with};
 use kinogaki_usd::usd::scene::{
     Cone, CurveBasis, CurveForm, CurveWrap, Interpolation, LightKind, Matrix4d, NodeKind,
     Projection, ReadOptions, ShapeForm, SubsetElement, UpAxis,
@@ -81,8 +79,8 @@ fn reads_primvars_as_authored_and_subsets_with_their_bindings() {
 
 #[test]
 fn shares_the_layers_columns() {
-    let text = include_bytes!("fixtures/cube.usda");
-    let mut stage = common::stage_named("cube.usda", text);
+    let text = include_bytes!("../fixtures/cube.usda");
+    let mut stage = crate::common::stage_named("cube.usda", text);
     let scene = kinogaki_usd::usd::scene::read(&mut stage, &ReadOptions::default()).unwrap();
     let Some(Value::Array(Array::Vec3f(points))) = stage.root_layer().get(
         &kinogaki_usd::usd::sdf::Path::parse("/World/Cube.points").unwrap(),
@@ -98,7 +96,7 @@ fn shares_the_layers_columns() {
 
 #[test]
 fn reads_time_samples_at_a_time() {
-    let text = include_bytes!("fixtures/cube.usda");
+    let text = include_bytes!("../fixtures/cube.usda");
     let at = |time| {
         let options = ReadOptions {
             time: Some(time),

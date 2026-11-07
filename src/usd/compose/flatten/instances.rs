@@ -66,6 +66,7 @@ impl Flattener<'_> {
     fn walk(&mut self, path: &Path) -> Result<()> {
         let mut work = vec![path.clone()];
         while let Some(path) = work.pop() {
+            self.composer.check()?;
             let index = self.composer.index(&path)?;
             let opinions = self.gather(&index, None);
             if !self.is_active(&opinions) {

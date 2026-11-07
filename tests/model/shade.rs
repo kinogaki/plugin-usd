@@ -2,9 +2,7 @@
 //! interface inputs, bindings and MaterialX documents, read as authored
 //! and written back unchanged.
 
-mod common;
-
-use common::{fixture, node, round_trips, scene_of};
+use crate::common::{fixture, node, round_trips, scene_of};
 use kinogaki_usd::usd::package::Bytes;
 use kinogaki_usd::usd::scene::{self, AssetSource, ReadOptions};
 use kinogaki_usd::usd::sdf::{Path, Token, Value};

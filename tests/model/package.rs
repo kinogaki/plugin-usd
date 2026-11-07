@@ -1,9 +1,7 @@
 //! Packages: textures held as the package's bytes, files given in memory,
 //! and scenes written as usdz with their assets, or beside a loose layer.
 
-mod common;
-
-use common::{node, scene_of};
+use crate::common::{node, scene_of};
 use kinogaki_usd::usd::package::{Bytes, Package};
 use kinogaki_usd::usd::scene::{self, Asset, AssetSource, NodeKind, ReadOptions};
 use kinogaki_usd::usd::sdf::{Token, Value};
@@ -80,7 +78,7 @@ fn a_packages_textures_are_views_of_its_bytes() {
 #[test]
 fn a_file_in_memory_reads_nothing_from_disk() {
     // A sibling of the same name on disk is never read: the file has no place.
-    let mut stage = common::stage_named(
+    let mut stage = crate::common::stage_named(
         "Cargo.toml.usda",
         b"#usda 1.0\ndef \"A\" (references = @./Cargo.toml@) {}\ndef Material \"M\" {\n    asset inputs:file = @README.md@\n}\n",
     );

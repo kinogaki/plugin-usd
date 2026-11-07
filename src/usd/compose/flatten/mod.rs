@@ -197,6 +197,7 @@ impl Flattener<'_> {
     fn prims(&mut self, source: &Path, path: &Path) -> Result<()> {
         let mut work = vec![(source.clone(), path.clone())];
         while let Some((source, path)) = work.pop() {
+            self.composer.check()?;
             let children = self.prim(&source, &path)?;
             for name in children.into_iter().rev() {
                 work.push((source.child(name.clone()), path.child(name)));
