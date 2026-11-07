@@ -2,11 +2,12 @@
 //! instances kept (a single layer is read as it is), then walked prim by
 //! prim, accumulating material bindings.
 //!
-//! Which prims load: defined, active prims (`over`s and `class`es only as
+//! Which prims load: defined, active prims (`over`s too within
 //! prototypes), of purpose `default` and `render` (`proxy` and `guide` when
 //! asked). Invisible prims load, marked. A group that holds nothing loads
 //! as nothing. Instanceable prims show shared prototypes, and a point
 //! instancer's prototypes are its own (not drawn in place beneath it).
+//! The scene's warnings start with what composing the stage reported.
 
 use std::collections::HashSet;
 
@@ -102,7 +103,7 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
         prototypes,
         materials,
         assets: Vec::with_capacity(paths.len()),
-        warnings,
+        warnings: stage.warnings().into_iter().chain(warnings).collect(),
     };
     for (path, authored) in paths {
         let source = asset_source(stage, &path);
@@ -440,7 +441,9 @@ impl Walker<'_> {
             let Some(Value::PathListOp(list)) = spec.get(field::TARGET_PATHS) else {
                 continue;
             };
-            let target = list.applied().into_iter().next()?;
+            let Some(target) = list.applied().into_iter().next() else {
+                continue;
+            };
             let stronger = matches!(spec.get("bindMaterialAs"), Some(Value::Token(t)) if t.as_str() == "strongerThanDescendants");
             let material = self.material(&target)?;
             return Some(Binding { material, stronger });

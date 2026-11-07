@@ -129,8 +129,9 @@ pub struct Node {
     /// visible prim under an invisible one is hidden.
     pub visible: bool,
     /// The material bound to it (UsdShade's resolution, ancestors
-    /// included), an index into [`Scene::materials`]. On an instance, it is
-    /// what the prototype's prims bind when they bind nothing themselves.
+    /// included), an index into [`Scene::materials`], on prims that show
+    /// geometry. On an instance or a point instancer, it is what the
+    /// prototypes' prims bind when they bind nothing themselves.
     pub material: Option<usize>,
     /// The prototype this instanceable prim shows beneath itself, an index
     /// into [`Scene::prototypes`].

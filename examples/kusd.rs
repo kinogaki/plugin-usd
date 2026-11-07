@@ -194,7 +194,13 @@ fn grid(output: &str, n: usize, megabytes: Option<usize>) -> Result<()> {
     let side = n + 1;
     let height = |i: usize| (i.wrapping_mul(2_654_435_761) % 10_007) as f32 * 1.0e-5;
     let points = (0..side * side)
-        .map(|i| [(i % side) as f32 * 0.01, (i / side) as f32 * 0.01, height(i)])
+        .map(|i| {
+            [
+                (i % side) as f32 * 0.01,
+                (i / side) as f32 * 0.01,
+                height(i),
+            ]
+        })
         .collect();
     let mut indices = Vec::with_capacity(n * n * 4);
     for row in 0..n {

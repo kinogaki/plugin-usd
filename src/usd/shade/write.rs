@@ -21,6 +21,9 @@ pub(crate) fn write(
             "{path} is not a prim path for a material"
         )));
     }
+    if author.has(path) {
+        return Err(Error::invalid(format!("{path} is written twice")));
+    }
     scopes(author, &path.parent());
     author.prim(path, "Material");
     if !material.custom_data.is_empty() {
