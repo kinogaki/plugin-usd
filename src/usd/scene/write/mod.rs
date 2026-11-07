@@ -8,10 +8,12 @@
 //! materials. An instance holds a copy of its prototype's prims; a point
 //! instancer holds its prototypes beneath it.
 //!
-//! A usdz carries every asset held or found on disk under `textures/`; a
-//! usda or usdc writes the held ones beside it, in `<stem>_textures/`, and
-//! names files on disk by their paths. A missing asset is written as it
-//! was authored.
+//! A usdz carries under `textures/` every asset held, and every file on
+//! disk that is a picture a usdz may pack ([`packable`]); a usda or usdc
+//! names files on disk by their paths. A missing asset, an unpackable one
+//! and, in a usda or usdc, a held one are written as they were authored:
+//! writing files beside a layer is its format's, which names them as it
+//! writes them.
 
 mod geometry;
 
@@ -22,7 +24,7 @@ use std::sync::Arc;
 use super::{Asset, AssetSource, Author, Matrix4d, Node, NodeKind, Scene, UpAxis, camera, light};
 use crate::usd::error::{Error, Result};
 use crate::usd::layer_file::{Format, write_layer};
-use crate::usd::package::{Bytes, write_usdz};
+use crate::usd::package::{Bytes, packable, write_usdz};
 use crate::usd::sdf::identifier::is_identifier;
 use crate::usd::sdf::{Array, LayerData, Path, Token, Value};
 use crate::usd::shade;
@@ -42,14 +44,13 @@ pub fn author(scene: &Scene) -> Result<LayerData> {
 }
 
 /// The path written for the asset at `path`: its new name when it was
-/// packaged or written beside, as authored when it is missing, else as it
-/// is.
+/// packaged, as authored when it is missing or held, else as it is.
 fn written(scene: &Scene, names: &HashMap<Token, Token>, path: &Token) -> Token {
     if let Some(name) = names.get(path) {
         return name.clone();
     }
     match scene.asset(path) {
-        Some(asset) if asset.source == AssetSource::Missing => asset.authored.clone(),
+        Some(asset) if !matches!(asset.source, AssetSource::File(_)) => asset.authored.clone(),
         _ => path.clone(),
     }
 }
@@ -98,28 +99,15 @@ pub fn write_file(scene: &Scene, path: impl AsRef<FilePath>) -> Result<()> {
             std::fs::write(path, bytes).map_err(|e| located(e.into()))
         }
         Format::Usda | Format::Usdc => {
-            let held: Vec<Asset> = (scene.assets.iter())
-                .filter(|a| matches!(a.source, AssetSource::Bytes(_)))
-                .cloned()
-                .collect();
-            let (names, files) = packaged(&held, &format!("{stem}_textures")).map_err(located)?;
-            let directory = path.parent().unwrap_or(FilePath::new(""));
-            for (name, bytes) in &files {
-                let target = directory.join(name);
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| located(e.into()))?;
-                }
-                std::fs::write(&target, bytes).map_err(|e| located(e.into()))?;
-            }
-            let layer = author_with(scene, &|p| written(scene, &names, p)).map_err(located)?;
-            write_layer(&layer, path)
+            let layer = author_with(scene, &|p| written(scene, &HashMap::new(), p));
+            write_layer(&layer.map_err(located)?, path)
         }
     }
 }
 
-/// Each asset that has bytes (held, or read from its file) named
-/// `<folder>/<its file name>`, names kept unique: the names by asset path,
-/// and the files.
+/// Each asset that has bytes (held, or a picture on disk) named
+/// `<folder>/<its file name>`, names kept unique (`<stem>_1.<extension>`…,
+/// counted per name): the names by asset path, and the files.
 #[allow(clippy::type_complexity)]
 fn packaged(
     assets: &[Asset],
@@ -127,11 +115,12 @@ fn packaged(
 ) -> Result<(HashMap<Token, Token>, Vec<(String, Bytes)>)> {
     let mut names = HashMap::new();
     let mut files: Vec<(String, Bytes)> = Vec::new();
+    let mut taken: HashMap<String, usize> = HashMap::new();
     for asset in assets {
         let bytes = match &asset.source {
             AssetSource::Bytes(bytes) => bytes.clone(),
-            AssetSource::File(file) => Bytes::from(std::fs::read(file)?),
-            AssetSource::Missing => continue,
+            AssetSource::File(file) if packable(file) => Bytes::from(std::fs::read(file)?),
+            AssetSource::File(_) | AssetSource::Missing => continue,
         };
         let file = file_name(&asset.path);
         let (stem, extension) = match file.rfind('.') {
@@ -139,11 +128,13 @@ fn packaged(
             _ => (file, ""),
         };
         let mut name = format!("{folder}/{file}");
-        let mut copy = 1;
-        while files.iter().any(|(taken, _)| *taken == name) {
-            name = format!("{folder}/{stem}_{copy}{extension}");
+        let mut copy = taken.get(&name).copied().unwrap_or(0);
+        while taken.contains_key(&name) {
             copy += 1;
+            name = format!("{folder}/{stem}_{copy}{extension}");
         }
+        taken.insert(format!("{folder}/{file}"), copy);
+        taken.insert(name.clone(), 0);
         names.insert(asset.path.clone(), Token::new(&name));
         files.push((name, bytes));
     }

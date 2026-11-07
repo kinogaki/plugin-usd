@@ -126,22 +126,17 @@ fn a_scene_writes_as_a_usdz_with_its_assets_under_textures() {
 }
 
 #[test]
-fn a_loose_layer_writes_held_assets_beside_it() {
+fn a_loose_layer_names_held_assets_as_authored_and_writes_nothing_beside_it() {
+    // Writing files beside a layer is the format's (`format::files::Beside`).
     let scene = scene_of(&package());
     let directory = scratch("loose");
     let path = directory.join("lamp.usda");
     scene::write_file(&scene, &path).unwrap();
-    assert_eq!(
-        std::fs::read(directory.join("lamp_textures/paper.png")).unwrap(),
-        PNG
-    );
-    assert_eq!(
-        std::fs::read(directory.join("lamp_textures/sky.exr")).unwrap(),
-        EXR
-    );
+    let written: Vec<_> = std::fs::read_dir(&directory).unwrap().collect();
+    assert_eq!(written.len(), 1, "the layer alone");
     let text = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
-    assert!(text.contains("@lamp_textures/paper.png@"), "{text}");
-    // Read from disk, the files are found beside it.
+    assert!(text.contains("@textures/paper.png@"), "{text}");
+    // Read from disk, the files are named where the layer places them.
     let again = scene::read(
         &mut crate::common::open(&path).unwrap(),
         &ReadOptions::default(),

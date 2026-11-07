@@ -1,16 +1,19 @@
 //! The files a written scene names. A usdz packs them: an embedded file's
-//! bytes (shared, not copied) and a file on disk's, under `textures/`, equal
-//! bytes one entry whatever their names. A usda or usdc names them as every
-//! written document does ([`Beside`]): a file on disk by its path relative
-//! to the layer, an embedded file written into `<stem>_textures` beside it.
-use crate::names::file_name;
-use crate::usd::package::{Buffer, Bytes};
+//! bytes (shared, not copied) and a picture on disk's, under `textures/`,
+//! equal bytes one entry whatever their names. It packs only pictures of
+//! the kinds a usdz holds (PNG, JPEG, OpenEXR, AVIF, by their bytes): any
+//! other file an Image node names stays a path, said. A usda or usdc names
+//! them as every written document does ([`Beside`]): a file on disk by its
+//! path relative to the layer, an embedded file written into
+//! `<stem>_textures` beside it.
+use crate::names::{Unique, file_name};
+use crate::usd::package::{Buffer, Bytes, packable};
 use crate::usd::scene::{Asset, AssetSource};
 use crate::usd::sdf::Token;
 use kinogaki_studio_api::Error;
 use kinogaki_studio_api::format::files::Beside;
 use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageFile};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -35,9 +38,13 @@ pub(super) enum Assets {
 #[derive(Default)]
 pub(super) struct Packed {
     assets: Vec<Asset>,
-    /// Each embedded file's asset path, by its bytes.
-    embedded: Vec<(EmbeddedFile, Token)>,
-    names: HashSet<String>,
+    /// Each file on disk's asset path, made once.
+    paths: HashMap<Arc<str>, Token>,
+    /// Each embedded file's asset path, by its bytes' hash.
+    embedded: HashMap<[u8; 32], Token>,
+    names: Unique,
+    /// Files on disk left as paths: no picture a usdz holds.
+    pub left: Vec<String>,
 }
 
 impl Assets {
@@ -63,11 +70,12 @@ impl Assets {
         }
     }
 
-    /// The assets the scene holds: a usdz's, packed.
-    pub fn assets(self) -> Vec<Asset> {
+    /// The assets the scene holds (a usdz's, packed), and what was left
+    /// unpacked, said.
+    pub fn assets(self) -> (Vec<Asset>, Vec<String>) {
         match self {
-            Assets::Packed(packed) => packed.assets,
-            Assets::Beside(_) => Vec::new(),
+            Assets::Packed(packed) => (packed.assets, packed.left),
+            Assets::Beside(_) => (Vec::new(), Vec::new()),
         }
     }
 }
@@ -76,52 +84,41 @@ impl Packed {
     fn file(&mut self, file: &ImageFile) -> Token {
         match file {
             ImageFile::Path(path) => {
-                let token = Token::new(path);
-                if !self.assets.iter().any(|a| a.path == token) {
-                    let source = match Path::new(&**path).is_file() {
-                        true => AssetSource::File(path.to_string().into()),
-                        false => AssetSource::Missing,
-                    };
-                    self.assets.push(Asset {
-                        path: token.clone(),
-                        authored: token.clone(),
-                        source,
-                    });
+                if let Some(token) = self.paths.get(path) {
+                    return token.clone();
                 }
+                let token = Token::new(path);
+                let source = match packable(Path::new(&**path)) {
+                    true => AssetSource::File(path.to_string().into()),
+                    false => {
+                        self.left.push(format!(
+                            "{path}: no picture a usdz holds (PNG, JPEG, OpenEXR or AVIF); kept as a path, not packed"
+                        ));
+                        AssetSource::Missing
+                    }
+                };
+                self.assets.push(Asset {
+                    path: token.clone(),
+                    authored: token.clone(),
+                    source,
+                });
+                self.paths.insert(path.clone(), token.clone());
                 token
             }
             ImageFile::Embedded(file) => {
-                let same = |held: &EmbeddedFile| {
-                    held.bytes().len() == file.bytes().len() && held.hash() == file.hash()
-                };
-                if let Some((_, token)) = self.embedded.iter().find(|(held, _)| same(held)) {
+                if let Some(token) = self.embedded.get(file.hash()) {
                     return token.clone();
                 }
-                let token = Token::new(&self.name(file_name(file.name())));
+                let token = Token::new(&self.names.take_file(file_name(file.name())));
                 let buffer: Buffer = Arc::new(Held(file.clone()));
                 self.assets.push(Asset {
                     path: token.clone(),
                     authored: token.clone(),
                     source: AssetSource::Bytes(Bytes::shared(buffer)),
                 });
-                self.embedded.push((file.clone(), token.clone()));
+                self.embedded.insert(*file.hash(), token.clone());
                 token
             }
         }
-    }
-
-    /// `name`, or `<stem>_<n>.<extension>` when another file took it.
-    fn name(&mut self, name: &str) -> String {
-        let (stem, extension) = match name.rfind('.') {
-            Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
-            _ => (name, ""),
-        };
-        let mut taken = name.to_owned();
-        let mut copy = 1;
-        while !self.names.insert(taken.clone()) {
-            taken = format!("{stem}_{copy}{extension}");
-            copy += 1;
-        }
-        taken
     }
 }

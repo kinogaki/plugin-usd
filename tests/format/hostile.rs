@@ -2,7 +2,7 @@
 //! it (a 2 MiB stack, `read_hostile`): an error or a warning, within a time
 //! bound and, where memory was the point, within a small budget.
 use crate::crafted;
-use crate::support::{Scratch, materials};
+use crate::support::{Scratch, materials, metres, write_file};
 use kinogaki_studio_api::format::{ReadLimits, options};
 use kinogaki_studio_api::geometry::image::{ImageFile, ImageSource};
 use kinogaki_studio_api::image_files::{IMAGE_NODE, image_source};
@@ -302,4 +302,85 @@ fn sublayers_named_over_and_over_stack_once() {
     .unwrap();
     let read = read_path(&dir.path().join("l0.usda"), &[]);
     assert!(read.items.iter().any(|i| i.name == "Deep"));
+}
+
+#[test]
+fn many_alike_names_export_in_linear_time() {
+    use kinogaki_studio_api::{FileItem, Xform};
+    let dir = Scratch::new("hostile-names");
+    let group = FileItem {
+        name: "Instance".into(),
+        parent: None,
+        placement: Xform::IDENTITY,
+        visible: true,
+        data: None,
+    };
+    let groups = vec![group; 20_000];
+    let start = std::time::Instant::now();
+    write_file(&dir.path().join("many.usda"), &groups, metres());
+    assert!(
+        start.elapsed() < Duration::from_secs(SECONDS),
+        "{:?}",
+        start.elapsed()
+    );
+    let text = std::fs::read_to_string(dir.path().join("many.usda")).unwrap();
+    assert!(text.contains("\"Instance_19999\""));
+}
+
+#[test]
+fn a_usdz_packs_pictures_and_nothing_else() {
+    use kinogaki_studio_api::image_files::image_node;
+    use kinogaki_studio_api::network::{NetworkSeed, NewNode};
+    use kinogaki_studio_api::standard::{self, ImportedMaterial, Materials};
+    let dir = Scratch::new("hostile-pack");
+    let png = dir.path().join("wood.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\nwood").unwrap();
+    let key = dir.path().join("id_rsa.png");
+    std::fs::write(&key, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
+    let mut inside = NetworkSeed::default();
+    let surface = NewNode::materialx("ND_UsdPreviewSurface_surfaceshader").unwrap();
+    let surface = inside.node(surface.displayed());
+    for (k, file) in [&png, &key, Path::new("/etc/hosts")]
+        .into_iter()
+        .enumerate()
+    {
+        let texture = inside.node(NewNode::materialx("ND_UsdUVTexture_23").unwrap());
+        let source = ImageSource::path(&file.display().to_string());
+        let image = inside.node(image_node::reading(&source).named(format!("I{k}")));
+        inside.wire(image, image_node::IMAGE, texture, "file");
+        if k == 0 {
+            inside.wire(texture, "rgb", surface, "diffuseColor");
+        }
+    }
+    let material = ImportedMaterial {
+        key: "/Looks/M".into(),
+        name: "M".into(),
+        inside,
+        standard: None,
+        double_sided: true,
+    };
+    let looks = Materials {
+        materials: vec![material],
+        images: Vec::new(),
+    };
+    let square = crate::support::square("/Looks/M");
+    let items = vec![
+        kinogaki_studio_api::FileItem::top("Looks", standard::materials().wrap(looks)),
+        kinogaki_studio_api::FileItem::top("Square", standard::geometry().wrap(square)),
+    ];
+    let path = dir.path().join("packed.usdz");
+    let said = write_file(&path, &items, metres());
+    let bytes =
+        kinogaki_usd::usd::package::Package::open(std::fs::read(&path).unwrap().into()).unwrap();
+    let names: Vec<&str> = bytes.names().collect();
+    assert_eq!(names[1..], ["textures/wood.png"], "{names:?}");
+    let left = said.join("\n");
+    assert!(
+        left.contains("id_rsa.png: no picture a usdz holds"),
+        "{left}"
+    );
+    assert!(
+        left.contains("/etc/hosts: no picture a usdz holds"),
+        "{left}"
+    );
 }

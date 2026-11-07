@@ -95,6 +95,30 @@ impl Package {
     }
 }
 
+/// Whether `path` is a regular file holding a picture a usdz may pack: its
+/// first bytes PNG's, JPEG's, OpenEXR's or AVIF's, whatever its name says.
+/// A package packs pictures and nothing else.
+pub fn packable(path: &std::path::Path) -> bool {
+    use std::io::Read as _;
+    let regular = std::fs::metadata(path).is_ok_and(|meta| meta.is_file());
+    let mut head = Vec::with_capacity(12);
+    let read = regular
+        && std::fs::File::open(path)
+            .and_then(|file| file.take(12).read_to_end(&mut head))
+            .is_ok();
+    read && is_picture(&head)
+}
+
+/// Whether `head`, a file's first bytes, starts a PNG, a JPEG, an OpenEXR
+/// or an AVIF.
+fn is_picture(head: &[u8]) -> bool {
+    let avif = head.get(4..8) == Some(b"ftyp") && head.get(8..11) == Some(b"avi");
+    head.starts_with(b"\x89PNG\r\n\x1a\n")
+        || head.starts_with(&[0xFF, 0xD8, 0xFF])
+        || head.starts_with(&[0x76, 0x2F, 0x31, 0x01])
+        || avif
+}
+
 /// Whether `name` (a file name or path) names a package: it ends in
 /// `.usdz`, whatever its case. Only such files are opened as packages.
 pub fn is_package(name: &str) -> bool {

@@ -120,7 +120,9 @@ impl FormatWriter for Writer {
             .into_iter()
             .map(|(_, p)| p)
             .collect();
-        out.scene.assets = std::mem::replace(&mut out.assets, Assets::of(path)).assets();
+        let (assets, unpacked) = std::mem::replace(&mut out.assets, Assets::of(path)).assets();
+        out.scene.assets = assets;
+        out.warnings.extend(unpacked);
         writing.check()?;
         crate::usd::scene::write_file(&out.scene, path)
             .map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
