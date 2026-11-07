@@ -361,3 +361,71 @@ def Xform "World"
         assert_eq!(placed.origin(), Vec3::new(0.0, 5.0, 0.0));
     }
 }
+
+/// A stage of one triangle, counter-clockwise seen from its +Z, its
+/// normals +Z, `up` up.
+fn triangle(up: &str) -> String {
+    format!(
+        r#"#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "{up}"
+)
+def Mesh "Tri"
+{{
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+        interpolation = "faceVarying"
+    )
+}}
+"#
+    )
+}
+
+/// The triangle of `up`'s stage read into `units`: its third point, its
+/// first corner's normal, and its normal by its winding.
+fn turned(up: &str, units: Units) -> (Vec3, Vec3, Vec3) {
+    let dir = Scratch::new("up-axis");
+    let path = dir.join("tri.usda");
+    std::fs::write(&path, triangle(up)).unwrap();
+    let read = read_file(&path, units, false);
+    let tri = standard::geometry()
+        .get(item(&read, "Tri").1.unwrap())
+        .unwrap();
+    let at = |c: usize| Vec3::from(tri.positions()[tri.primitives().primitive(0)[c] as usize]);
+    let wound = (at(1) - at(0)).cross(at(2) - at(0)).normalized().unwrap();
+    let n = tri
+        .attributes()
+        .tuples::<[f32; 3]>(Domain::Vertex, names::N)
+        .unwrap()[0];
+    let n = Vec3::new(n[0].into(), n[1].into(), n[2].into());
+    (Vec3::from(tri.positions()[2]), n, wound)
+}
+
+fn near(a: Vec3, b: Vec3) -> bool {
+    (a - b).length() < 1e-9
+}
+
+/// A Z-up stage's faces land in a Y-up project turned as a rotation does
+/// (its +Z the project's +Y, its +Y the project's −Z), facing where their
+/// normals point.
+#[test]
+fn a_z_up_stages_faces_land_in_a_y_up_project_turned_not_mirrored() {
+    let (p, n, wound) = turned("Z", metres());
+    assert!(near(p, Vec3::new(0.0, 0.0, -1.0)), "+Y is −Z: {p:?}");
+    assert!(near(n, Vec3::Y), "+Z is +Y: {n:?}");
+    assert!(near(wound, Vec3::Y), "it faces its normal: {wound:?}");
+}
+
+/// A Y-up stage's faces land in a Z-up project turned the other way (its +Y
+/// the project's +Z, its +Z the project's −Y), facing where their normals
+/// point.
+#[test]
+fn a_y_up_stages_faces_land_in_a_z_up_project_turned_not_mirrored() {
+    let (p, n, wound) = turned("Y", Units::new(1.0, UpAxis::Z).unwrap());
+    assert!(near(p, Vec3::Z), "+Y is +Z: {p:?}");
+    assert!(near(n, -Vec3::Y), "+Z is −Y: {n:?}");
+    assert!(near(wound, -Vec3::Y), "it faces its normal: {wound:?}");
+}
