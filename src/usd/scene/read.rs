@@ -74,6 +74,7 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
         },
         prototypes: Vec::new(),
         prototype_at: PathMap::default(),
+        reading: Vec::new(),
         materials: Vec::new(),
         material_at: PathMap::default(),
         warnings: Vec::new(),
@@ -173,6 +174,8 @@ struct Walker<'a> {
     assets: AssetPaths<'a>,
     prototypes: Vec<Prototype>,
     prototype_at: PathMap<usize>,
+    /// The prototypes being read, innermost last.
+    reading: Vec<usize>,
     materials: Vec<Material>,
     material_at: PathMap<Option<usize>>,
     warnings: Vec<String>,
@@ -261,8 +264,8 @@ impl Walker<'_> {
             binding,
             depth: inherited.depth + 1,
         };
-        let kind = self.kind(path, &type_name);
-        let instance = self.instance(path, here);
+        let kind = self.kind(path, &type_name, here.depth);
+        let instance = self.instance(path, here.depth);
         let local = local_transform(self.layer, path, self.time);
         let shows_material = instance.is_some()
             || !matches!(
@@ -295,7 +298,7 @@ impl Walker<'_> {
 
     /// What the prim at `path` of type `type_name` holds; a group when it
     /// can't be read, said once.
-    fn kind(&mut self, path: &Path, type_name: &Token) -> NodeKind {
+    fn kind(&mut self, path: &Path, type_name: &Token, depth: usize) -> NodeKind {
         let (layer, time) = (self.layer, self.time);
         let read = match type_name.as_str() {
             "Mesh" => mesh::read(layer, path, time, &mut self.warnings).map(|mut mesh| {
@@ -313,11 +316,12 @@ impl Walker<'_> {
                 curves::read_points(layer, path, time).map(|p| NodeKind::Points(Box::new(p)))
             }
             "Camera" => Ok(NodeKind::Camera(Box::new(camera::read(layer, path, time)))),
-            "PointInstancer" => {
-                let prototypes = self.instancer_prototypes(path);
-                instancer::read(layer, path, prototypes, time)
-                    .map(|i| NodeKind::Instancer(Box::new(i)))
-            }
+            "PointInstancer" => self
+                .instancer_prototypes(path, depth)
+                .and_then(|prototypes| {
+                    instancer::read(layer, path, prototypes, time)
+                        .map(|i| NodeKind::Instancer(Box::new(i)))
+                }),
             name if LightKind::unread(name) => Err(format!("{name} is not read")),
             name => match (
                 LightKind::of_type(name),
@@ -340,7 +344,7 @@ impl Walker<'_> {
 
     /// The prototype an instanceable prim at `path` shows: the flattened
     /// stage's prototype its internal reference names.
-    fn instance(&mut self, path: &Path, inherited: Inherited) -> Option<usize> {
+    fn instance(&mut self, path: &Path, depth: usize) -> Option<usize> {
         let spec = self.layer.spec(path)?;
         if spec.get(field::INSTANCEABLE).and_then(Value::as_bool) != Some(true) {
             return None;
@@ -351,59 +355,72 @@ impl Walker<'_> {
         let target = (list.applied().into_iter())
             .find(|r| r.asset.is_empty() && r.prim.name().starts_with("Flattened_Prototype_"))?
             .prim;
-        if let Some(&known) = self.prototype_at.get(&target) {
-            return Some(known);
+        match self.prototype(&target, false, depth) {
+            Ok(index) => Some(index),
+            Err(why) => {
+                self.warn(format!("{path}: {why}; it shows nothing"));
+                None
+            }
         }
-        let index = self.reserve(&target, target.clone());
-        let mut nodes = Vec::new();
-        let top = Inherited {
-            binding: None,
-            depth: inherited.depth,
-        };
-        self.children(&target, None, top, true, &mut nodes);
-        self.prototypes[index].nodes = nodes;
-        Some(index)
     }
 
     /// The prototypes of the point instancer at `path`, in its
     /// `prototypes` targets' order.
-    fn instancer_prototypes(&mut self, path: &Path) -> Vec<usize> {
-        let targets = match self
-            .layer
-            .get(&path.property("prototypes"), field::TARGET_PATHS)
-        {
+    fn instancer_prototypes(
+        &mut self,
+        path: &Path,
+        depth: usize,
+    ) -> std::result::Result<Vec<usize>, String> {
+        let relationship = path.property("prototypes");
+        let targets = match self.layer.get(&relationship, field::TARGET_PATHS) {
             Some(Value::PathListOp(list)) => list.applied(),
             _ => Vec::new(),
         };
-        let mut prototypes = Vec::with_capacity(targets.len());
-        for target in targets {
-            if let Some(&known) = self.prototype_at.get(&target) {
-                prototypes.push(known);
-                continue;
-            }
-            let index = self.reserve(&target, target.parent());
-            let mut nodes = Vec::new();
-            let top = Inherited {
-                binding: None,
-                depth: path.depth() as usize,
-            };
-            self.prim(&target, None, top, true, &mut nodes);
-            self.prototypes[index].nodes = nodes;
-            prototypes.push(index);
-        }
-        prototypes
+        (targets.iter())
+            .map(|target| self.prototype(target, true, depth))
+            .collect()
     }
 
-    /// A new prototype for `source`, whose top prims are beneath `root`,
-    /// known before it is read (a prototype may hold instances).
-    fn reserve(&mut self, source: &Path, root: Path) -> usize {
+    /// The prototype read from `source`, once: the prim itself (`whole`)
+    /// or its children. `Err` when `source` is being read, a prototype
+    /// that holds itself.
+    fn prototype(
+        &mut self,
+        source: &Path,
+        whole: bool,
+        depth: usize,
+    ) -> std::result::Result<usize, String> {
+        if let Some(&known) = self.prototype_at.get(source) {
+            if self.reading.contains(&known) {
+                return Err(format!("its prototype {source} holds itself"));
+            }
+            return Ok(known);
+        }
         let index = self.prototypes.len();
+        let root = if whole {
+            source.parent()
+        } else {
+            source.clone()
+        };
         self.prototypes.push(Prototype {
             root,
             nodes: Vec::new(),
         });
         self.prototype_at.insert(source.clone(), index);
-        index
+        self.reading.push(index);
+        let mut nodes = Vec::new();
+        let top = Inherited {
+            binding: None,
+            depth,
+        };
+        if whole {
+            self.prim(source, None, top, true, &mut nodes);
+        } else {
+            self.children(source, None, top, true, &mut nodes);
+        }
+        self.reading.pop();
+        self.prototypes[index].nodes = nodes;
+        Ok(index)
     }
 
     /// The material bound to the prim at `path` itself: its full-purpose

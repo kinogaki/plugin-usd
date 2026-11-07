@@ -8,6 +8,8 @@
 //! kusd scene <file> [out]         summarize the file's scene, or write it out
 //! kusd bench <layer> [runs]       time reading and writing every format
 //! kusd scene-time <file> [runs]   time opening a stage and reading its scene
+//! kusd grid <out> <n> [texture MB] write an n x n quad grid (faceVarying st),
+//!                                 with a texture of that size as an asset
 //! ```
 //!
 //! It runs as a host does: it installs workers (one thread per core) for
@@ -43,9 +45,14 @@ fn main() -> ExitCode {
         ["scene", input, output] => summarize(input, Some(output)),
         ["bench", input, ..] => bench(input, runs(2)),
         ["scene-time", input, ..] => scene_time(input, runs(2)),
+        ["grid", output, n, rest @ ..] => grid(
+            output,
+            n.parse().unwrap_or(837),
+            rest.first().and_then(|m| m.parse().ok()),
+        ),
         _ => {
             eprintln!(
-                "usage: kusd cat|flatten|scene|bench|scene-time <file> | kusd write|scene <file> <out>"
+                "usage: kusd cat|flatten|scene|bench|scene-time <file> | kusd write|scene <file> <out> | kusd grid <out> <n> [MB]"
             );
             return ExitCode::from(2);
         }
@@ -155,7 +162,8 @@ fn bench(input: &str, runs: usize) -> Result<()> {
     Ok(())
 }
 
-/// Time opening the stage, reading its scene, and writing it as a usdz.
+/// Time opening the stage, reading its scene, and writing it as a usdz
+/// (authored, packaged in memory, and written to a file with its assets).
 fn scene_time(input: &str, runs: usize) -> Result<()> {
     let (open, _) = best(runs, || Stage::open(input))?;
     let (read, scene) = best(runs, || {
@@ -163,10 +171,121 @@ fn scene_time(input: &str, runs: usize) -> Result<()> {
     })?;
     let (author, layer) = best(runs, || scene::author(&scene))?;
     let (usdz, _) = best(runs, || package::write_usdz(&layer, "root.usdc", &[]))?;
+    let file = std::env::temp_dir().join(format!("kusd-{}.usdz", std::process::id()));
+    let (written, _) = best(runs, || scene::write_file(&scene, &file))?;
+    std::fs::remove_file(&file)?;
     println!(
-        "open {open:.1} ms, open + scene {read:.1} ms, author {author:.1} ms, usdz {usdz:.1} ms (best of {runs})"
+        "open {open:.1} ms, open + scene {read:.1} ms, author {author:.1} ms, usdz {usdz:.1} ms, usdz file {written:.1} ms (best of {runs})"
     );
     Ok(())
+}
+
+/// Write an `n` x `n` quad grid of centimetre cells in the XY plane, a
+/// small height on each point (so its text holds full floats), its `st`
+/// faceVarying and indexed, bound to a material whose texture is
+/// `megabytes` of bytes.
+fn grid(output: &str, n: usize, megabytes: Option<usize>) -> Result<()> {
+    use kinogaki_usd::usd::scene::{
+        Asset, AssetSource, Interpolation, Mesh, Node, Primvar, Scene, Subdivision,
+    };
+    use kinogaki_usd::usd::sdf::{Array, Path, Token, Value};
+    use kinogaki_usd::usd::shade::{Material, Port, ShadeKind, ShadeNode, Source};
+    use std::sync::Arc;
+    let side = n + 1;
+    let height = |i: usize| (i.wrapping_mul(2_654_435_761) % 10_007) as f32 * 1.0e-5;
+    let points = (0..side * side)
+        .map(|i| [(i % side) as f32 * 0.01, (i / side) as f32 * 0.01, height(i)])
+        .collect();
+    let mut indices = Vec::with_capacity(n * n * 4);
+    for row in 0..n {
+        for column in 0..n {
+            let corner = (row * side + column) as i32;
+            let side = side as i32;
+            indices.extend([corner, corner + 1, corner + side + 1, corner + side]);
+        }
+    }
+    let st = Primvar {
+        name: Token::new("st"),
+        type_name: Token::new("texCoord2f[]"),
+        interpolation: Interpolation::FaceVarying,
+        element_size: 1,
+        values: Value::Array(Array::Vec2f(Arc::new(vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 1.0],
+        ]))),
+        indices: Some(Arc::new((0..n * n * 4).map(|i| (i % 4) as i32).collect())),
+        color_space: None,
+    };
+    let mesh = Mesh {
+        points: Arc::new(points),
+        face_vertex_counts: Arc::new(vec![4; n * n]),
+        face_vertex_indices: Arc::new(indices),
+        left_handed: false,
+        primvars: vec![st],
+        subdivision: Subdivision::default(),
+        subsets: Vec::new(),
+        double_sided: false,
+    };
+    let mut scene = Scene::default();
+    scene.nodes.push(Node::group("World", None));
+    let mut plane = Node::group("Grid", Some(0));
+    plane.type_name = Token::new("Mesh");
+    plane.kind = NodeKind::Mesh(Box::new(mesh));
+    if let Some(megabytes) = megabytes {
+        let path = Path::parse("/World/Looks/Checker").expect("a path");
+        let mut material = Material::new(path.clone());
+        let file = Token::new("checker.png");
+        let mut texture = ShadeNode {
+            path: path.child("Texture"),
+            kind: ShadeKind::Shader,
+            parent: None,
+            info: vec![Port::new(
+                "id",
+                "token",
+                Some(Value::Token(Token::new("UsdUVTexture"))),
+            )],
+            inputs: vec![Port::new("file", "asset", Some(Value::Asset(file.clone())))],
+            outputs: vec![Port::new("rgb", "float3", None)],
+        };
+        texture.info[0].uniform = true;
+        let mut surface = Port::new("surface", "token", None);
+        surface.sources.push(Source {
+            node: Some(1),
+            port: Token::new("surface"),
+            output: true,
+        });
+        let mut diffuse = Port::new("diffuseColor", "color3f", None);
+        diffuse.sources.push(Source {
+            node: Some(0),
+            port: Token::new("rgb"),
+            output: true,
+        });
+        let mut preview = ShadeNode {
+            path: path.child("Preview"),
+            kind: ShadeKind::Shader,
+            parent: None,
+            info: texture.info.clone(),
+            inputs: vec![diffuse],
+            outputs: vec![Port::new("surface", "token", None)],
+        };
+        preview.info[0].value = Some(Value::Token(Token::new("UsdPreviewSurface")));
+        material.nodes = vec![texture, preview];
+        material.outputs.push(surface);
+        scene.materials.push(material);
+        plane.material = Some(0);
+        let bytes = (0..megabytes << 20)
+            .map(|i| (i * 7 + i / 4096) as u8)
+            .collect::<Vec<u8>>();
+        scene.assets.push(Asset {
+            path: file.clone(),
+            authored: file,
+            source: AssetSource::Bytes(bytes.into()),
+        });
+    }
+    scene.nodes.push(plane);
+    scene::write_file(&scene, output)
 }
 
 /// The workers a host installs: the calling thread and scoped helpers, one

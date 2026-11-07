@@ -39,6 +39,37 @@ A scene authors as one layer (`defaultPrim`, `upAxis`, `metersPerUnit`; prims, b
 
 `cargo test` runs the unit tests and `tests/`: composition (`compose.rs`), the scene (`scene.rs`), materials (`shade.rs`), instancing (`instancing.rs`), packages and memory input (`package.rs`), and mutation fuzzing of text, crates and packages (`fuzz.rs`). Every fixture under `tests/fixtures/` is written for this repository and is under its licence. Larger corpora are local only: OpenUSD's own test layers through `tools/parity.py`, and Pixar's Kitchen Set (not redistributable) for timing.
 
+## Checks against OpenUSD
+
+`tools/parity.py` runs `kusd` against an OpenUSD v26.08 build's `usdcat` over OpenUSD's own test layers (local only; OpenUSD is an oracle, never a dependency):
+
+| Suite | Agree |
+|---|---|
+| usda printed as usdcat prints it | 2,018 of 2,056 (2,017 byte for byte); the rest hold attribute splines (31), array edits (4) or strings that are not UTF-8 (2), which are refused, and one path expression not re-anchored |
+| usdc printed as usda | 30 of 30, byte for byte |
+| usdz root layers printed as usda | 51 of 51, byte for byte |
+| usda written as usdc, read back by usdcat | 2,018 of 2,056 (16 that usdcat can't write either) |
+| usdc written as usda | 30 of 30 |
+| stages flattened (`usdcat --flatten`) | 1,926 of 2,055 (1,925 byte for byte) |
+| scenes read and written, read by usdcat | 2,101 of 2,101 written; 174 layers refused (invalid on purpose, or splines and array edits) |
+
+A usdz written with USD Preview Surface and MaterialX networks and a packaged texture passes Apple's `usdchecker --arkit` (USD 25.11). An engine's own network (`outputs:kinogaki:surface`) fails its shader registry check, which knows no such shader, whether named by `info:id` or by a source type.
+
+## Performance
+
+Release builds on an Apple M4 Max (16 cores), best of 10, through `kusd` with one worker per core (`examples/kusd.rs`); the files are read from disk, the times include it:
+
+| Case | Time |
+|---|---:|
+| An 837 × 837 quad grid (700,569 faces, faceVarying `st`), usdc 8.4 MB: opened and read as a scene | 5.4 ms |
+| The grid as usda (51 MB) | 13.2 ms |
+| The grid as usdz with a 100 MB texture (against 5.5 ms without) | 15.2 ms |
+| The grid authored and written as a usdz file | 12.0 ms |
+| Pixar's Kitchen Set: composed, flattened and read as a scene (2,742 prims) | 67 ms |
+| Kitchen Set, instanced (114 prototypes) | 53 ms |
+
+`kusd grid <out> 837 [MB]` writes the grid; `kusd scene-time <file>` and `kusd bench <layer>` time it.
+
 ## Building
 
 The format builds from this repository and the public studio-sdk, checked out side by side as Studio's tree lays them out (`sdk/` and `plugins/usd/`), with the compiler the SDK pins (`sdk/rust-toolchain.toml`):

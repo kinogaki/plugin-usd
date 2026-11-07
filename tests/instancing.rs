@@ -190,3 +190,34 @@ def PointInstancer "Broken"
         scene.warnings
     );
 }
+
+#[test]
+fn a_prototype_holding_itself_is_refused() {
+    let scene = scene_of(
+        br#"#usda 1.0
+def PointInstancer "Loop"
+{
+    point3f[] positions = [(0, 0, 0)]
+    int[] protoIndices = [0]
+    rel prototypes = </Loop/Prototypes/Again>
+
+    def Scope "Prototypes"
+    {
+        def PointInstancer "Again"
+        {
+            point3f[] positions = [(0, 0, 0)]
+            int[] protoIndices = [0]
+            rel prototypes = </Loop/Prototypes/Again>
+        }
+    }
+}
+"#,
+    );
+    let said = "/Loop/Prototypes/Again: its prototype /Loop/Prototypes/Again holds itself";
+    assert!(
+        scene.warnings.iter().any(|w| w.starts_with(said)),
+        "{:?}",
+        scene.warnings
+    );
+    assert!(kinogaki_usd::usd::scene::author(&scene).is_ok());
+}

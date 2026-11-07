@@ -129,7 +129,10 @@ impl Reader<'_> {
                 .and_then(Value::as_token)
                 .cloned()
                 .unwrap_or_default();
-            let value = value_at(self.layer, prim, property, self.time).map(|v| self.assets_in(v));
+            // An attribute's value (a path some files author as one is not).
+            let value = value_at(self.layer, prim, property, self.time)
+                .filter(|value| value.attribute_kind().is_some())
+                .map(|value| self.assets_in(value));
             let sources = self.sources(&attribute);
             let uniform =
                 spec.get(field::VARIABILITY) == Some(&Value::Variability(Variability::Uniform));
