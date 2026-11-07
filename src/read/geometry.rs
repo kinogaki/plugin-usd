@@ -5,14 +5,13 @@
 //! (a GeomSubset's binding over its mesh's) and GeomSubsets as groups;
 //! curves; points.
 use crate::names;
-use crate::shading::LINEAR_REC709;
-use crate::space::Space;
 use crate::usd::scene::{
     CurveBasis, CurveForm, CurveWrap, Curves, Interpolation, Mesh, Points, Primvar, SubsetElement,
 };
 use crate::usd::sdf::{Array, Value as Usd};
 use kinogaki_studio_api::Error;
-use kinogaki_studio_api::color::ColorService;
+use kinogaki_studio_api::color::{ColorService, LIN_REC709};
+use kinogaki_studio_api::format::Conversion;
 use kinogaki_studio_api::geometry::{
     Attribute, AttributeType, Attributes, Basis, Column, CurveData, Domain, Elements, Geometry,
     Kind, Knots, Meaning, Primitives, Storage, Text, Values, check_name, names as standard,
@@ -23,7 +22,7 @@ use std::sync::Arc;
 /// What reading geometry needs: the project's space and colors, and each
 /// material's key by its index in the scene.
 pub(super) struct Shaping<'a> {
-    pub space: &'a Space,
+    pub space: &'a Conversion,
     pub colors: &'a dyn ColorService,
     pub keys: &'a [Arc<str>],
 }
@@ -92,7 +91,7 @@ pub(super) fn mesh(
             .collect(),
     };
     let positions: Vec<[f64; 3]> = (mesh.points.iter())
-        .map(|p| cx.space.point(p.map(f64::from)))
+        .map(|p| cx.space.point(p.map(f64::from).into()).to_array())
         .collect();
     let table = Primitives::of_polygons(positions.len(), offsets.into(), vertices.into())?;
     let mut attributes = Attributes::new();
@@ -363,11 +362,11 @@ fn moved(
     };
     let space = cx.space;
     match (meaning, width) {
-        (Meaning::Point, 3) => each(out, &|p| space.point(p)),
-        (Meaning::Vector, 3) => each(out, &|v| space.direction(v).map(|c| c * space.scale)),
-        (Meaning::Normal, 3) => each(out, &|n| space.direction(n)),
+        // A vector is of lengths: turned and scaled, as a point is.
+        (Meaning::Point | Meaning::Vector, 3) => each(out, &|p| space.point(p.into()).to_array()),
+        (Meaning::Normal, 3) => each(out, &|n| space.direction(n.into()).to_array()),
         (Meaning::Color, 3 | 4) => {
-            let from = primvar.color_space.as_deref().unwrap_or(LINEAR_REC709);
+            let from = primvar.color_space.as_deref().unwrap_or(LIN_REC709);
             let mut rgb: Vec<[f64; 3]> = (out.chunks_exact(width))
                 .map(|c| [c[0], c[1], c[2]].map(f64::from))
                 .collect();
@@ -409,7 +408,7 @@ pub(super) fn curves(
     warnings: &mut Vec<String>,
 ) -> Result<Geometry, Error> {
     let positions: Vec<[f64; 3]> = (curves.points.iter())
-        .map(|p| cx.space.point(p.map(f64::from)))
+        .map(|p| cx.space.point(p.map(f64::from).into()).to_array())
         .collect();
     let mut offsets = vec![0u32];
     let mut vertices: Vec<u32> = Vec::with_capacity(positions.len());
@@ -498,7 +497,7 @@ pub(super) fn curves(
 /// `points` as points alone: `widths` as `width`, `ids` as `id`.
 pub(super) fn points(points: &Points, cx: &Shaping<'_>) -> Result<Geometry, Error> {
     let positions: Vec<[f64; 3]> = (points.points.iter())
-        .map(|p| cx.space.point(p.map(f64::from)))
+        .map(|p| cx.space.point(p.map(f64::from).into()).to_array())
         .collect();
     let table = Primitives::new(
         positions.len(),
@@ -545,7 +544,7 @@ fn width(
     let constant = widths.interpolation == Interpolation::Constant;
     let values: Option<Vec<f32>> = (0..count)
         .map(|at| flat.get(if constant { 0 } else { read(at) }).copied())
-        .map(|w| w.map(|w| (w * cx.space.scale) as f32))
+        .map(|w| w.map(|w| cx.space.length(w) as f32))
         .collect();
     let Some(values) = values else {
         return Ok(attributes);

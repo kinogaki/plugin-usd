@@ -17,16 +17,16 @@
 //! `kinogaki:doubleSided`).
 use super::assets::Assets;
 use super::preview;
-use crate::names::{self, Unique};
+use crate::names;
 use crate::shading::{
-    self, DOUBLE_SIDED_KEY, KINOGAKI, LINEAR_REC709, MTLX, NAME_KEY, OPACITY_MODES, UNIVERSAL,
-    terminal,
+    self, DOUBLE_SIDED_KEY, KINOGAKI, MTLX, NAME_KEY, OPACITY_MODES, UNIVERSAL, terminal,
 };
 use crate::usd::sdf::{Path, Token, Value as Usd};
 use crate::usd::shade::{Material, Port, ShadeKind, ShadeNode, Source};
 use kinogaki_mtlx::{NodeDef, Type};
 use kinogaki_render_api::material::mtlx::SIGNATURE;
-use kinogaki_studio_api::color::ColorService;
+use kinogaki_studio_api::color::{ColorService, LIN_REC709, SRGB_TEXTURE};
+use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::geometry::image::ImageColor;
 use kinogaki_studio_api::image_files::{IMAGE_NODE, image_source};
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
@@ -256,9 +256,10 @@ impl Network<'_> {
                     .find(|p| p.name.as_str() == "file")
                     .map(|p| p.color_space.clone());
                 if let Some(space) = space {
+                    // sRGB by its interop name or by MaterialX's.
                     let token = match space.as_deref() {
                         Some("raw") => "raw",
-                        Some("srgb_texture") => "sRGB",
+                        Some(SRGB_TEXTURE | "srgb_texture") => "sRGB",
                         _ => "auto",
                     };
                     let mut port = Port::new(
@@ -444,7 +445,7 @@ impl Network<'_> {
             return Some(self.colors.working().to_owned());
         }
         let mut held = [[rgb[0], rgb[1], rgb[2]]];
-        match self.colors.working_to(LINEAR_REC709, &mut held) {
+        match self.colors.working_to(LIN_REC709, &mut held) {
             Ok(()) => rgb.copy_from_slice(&held[0]),
             Err(e) => {
                 let name = self.name;
@@ -469,6 +470,7 @@ impl Network<'_> {
         let asset = self.assets.file(source.file())?;
         let mut port = Port::new(input, "asset", Some(Usd::Asset(asset)));
         port.uniform = uniform;
+        // USD's spelling of data is `raw`.
         port.color_space = match source.color() {
             ImageColor::Auto => None,
             ImageColor::Data => Some(Token::new("raw")),

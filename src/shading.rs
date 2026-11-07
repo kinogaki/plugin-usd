@@ -5,7 +5,7 @@
 //! A Material prim holds a network per render context, each behind its own
 //! terminal outputs (DESIGN §8.2):
 //! - [`KINOGAKI`]: an engine's own nodes, each `info:id` its node type's id
-//!   (`kinogaki.spectre.anodized_aluminum_surface`), values by their kind;
+//!   (`acme.render.brushed_metal`), values by their kind;
 //! - [`MTLX`]: MaterialX in USD (UsdMtlx), each `info:id` a MaterialX node
 //!   definition (`ND_open_pbr_surface_surfaceshader`), values by its types;
 //! - [`UNIVERSAL`]: USD Preview Surface, `info:id` its own names
@@ -24,10 +24,6 @@ pub(crate) const KINOGAKI: &str = "kinogaki";
 pub(crate) const MTLX: &str = "mtlx";
 /// The universal render context: USD Preview Surface.
 pub(crate) const UNIVERSAL: &str = "";
-
-/// The space USD Preview Surface's colors are in, and any color USD gives
-/// without a `colorSpace`: linear Rec.709.
-pub(crate) const LINEAR_REC709: &str = "lin_rec709_scene";
 
 /// The `customData` key holding the name a material had in Kinogaki.
 pub(crate) const NAME_KEY: &str = "kinogaki:name";

@@ -4,12 +4,13 @@
 //! materials as bindings (GeomSubsets where they differ) and its primitive
 //! groups as GeomSubsets; its curves BasisCurves or NurbsCurves, one prim
 //! for each kind of curve; points alone, Points.
-use crate::names::{self, Unique};
+use crate::names;
 use crate::usd::scene::{
     CurveBasis, CurveForm, CurveWrap, Curves, Interpolation, Mesh, NodeKind, Points, Primvar,
     Subdivision, Subset, SubsetElement,
 };
 use crate::usd::sdf::{Array, Token, Value as Usd};
+use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::geometry::{
     Attribute, Basis, Domain, Geometry, Kind, Meaning, Values, names as standard,
 };

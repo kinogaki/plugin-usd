@@ -31,9 +31,9 @@ use std::sync::Mutex;
 use super::compression::{CrateInt, decompress_integers};
 use super::rep::Rep;
 use crate::usd::error::{Error, Result};
-use crate::usd::parallel;
 use crate::usd::sdf::{LayerData, Path, SpecType, Token, Value};
 use kinogaki_studio_api::format::ReadBudget;
+use kinogaki_studio_api::geometry::parallel;
 
 /// Crates smaller than this decode their arrays on the calling thread.
 const PARALLEL_BYTES: usize = 1 << 20;
@@ -222,10 +222,15 @@ impl Crate<'_> {
             }
         }
         // Small crates decode on this thread: starting workers costs more.
+        // A cancelled read decodes no further array.
+        let decode = |rep: Rep| -> Result<Value> {
+            self.budget.check()?;
+            self.value(rep, 0)
+        };
         let decoded: Vec<Result<Value>> = if self.data.len() < PARALLEL_BYTES {
-            arrays.iter().map(|rep| self.value(*rep, 0)).collect()
+            arrays.iter().map(|rep| decode(*rep)).collect()
         } else {
-            parallel::map(arrays.len(), |index| self.value(arrays[index], 0))
+            parallel::map(arrays.len(), |index| decode(arrays[index]))
         };
         let decoded = decoded.into_iter().collect::<Result<Vec<Value>>>()?;
         for (path, field, slot) in pending {

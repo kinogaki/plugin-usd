@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
-license = "MIT OR Apache-2.0"
+license = "(MIT OR Apache-2.0) AND LicenseRef-TOST-1.0"
 
 # The format builds from its own repository and the public SDK's alone,
 # checked out side by side as Studio's tree lays them out (README

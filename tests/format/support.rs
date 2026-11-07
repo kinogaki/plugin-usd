@@ -11,31 +11,10 @@ use kinogaki_studio_api::{
     Data, FileFormat, FileItem, FormatOptions, Imported, Input, Purpose, Reading, Value, Writing,
 };
 use kinogaki_studio_api_testing::Unconverted;
+pub use kinogaki_studio_api_testing::format::Scratch;
 use kinogaki_usd::Usd;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-
-/// A folder of the test's own, removed when it ends.
-pub struct Scratch(PathBuf);
-
-impl Scratch {
-    pub fn new(name: &str) -> Scratch {
-        let dir = std::env::temp_dir().join(format!("kinogaki-usd-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Scratch(dir)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 /// The stage rooted at the layer `path` on disk, reading the files in its
 /// folder and below as Import does.

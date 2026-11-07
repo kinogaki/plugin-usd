@@ -18,8 +18,8 @@ use crate::usd::crate_file::compression::{CrateInt, compress_integers};
 use crate::usd::crate_file::element::{CrateElement, encode};
 use crate::usd::crate_file::rep::Rep;
 use crate::usd::error::Result;
-use crate::usd::parallel;
 use crate::usd::sdf::{Array, Half, LayerData, Value, ValueKind};
+use kinogaki_studio_api::geometry::parallel;
 
 /// Arrays shorter than this stay uncompressed.
 const MIN_COMPRESSED: usize = 16;

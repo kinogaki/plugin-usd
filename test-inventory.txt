@@ -11,10 +11,10 @@ kinogaki-usd/format test hostile::a_dictionary_shared_by_its_entries_decodes_onc
 kinogaki-usd/format test hostile::a_layer_named_many_ways_is_read_once
 kinogaki-usd/format test hostile::a_path_tree_too_deep_is_refused_on_the_import_stack
 kinogaki-usd/format test hostile::a_prim_order_of_many_names_applies_in_linear_time
-kinogaki-usd/format test hostile::a_usdz_names_nothing_outside_itself_on_disk
+kinogaki-usd/format test hostile::a_usdz_held_in_memory_reads_nothing_on_disk
 kinogaki-usd/format test hostile::a_usdz_packs_pictures_and_nothing_else
 kinogaki-usd/format test hostile::an_array_shared_by_many_fields_decodes_once
-kinogaki-usd/format test hostile::layers_and_textures_outside_the_folder_are_left_unresolved
+kinogaki-usd/format test hostile::layers_and_textures_outside_the_folder_are_read
 kinogaki-usd/format test hostile::list_ops_of_many_items_apply_in_linear_time
 kinogaki-usd/format test hostile::many_alike_names_export_in_linear_time
 kinogaki-usd/format test hostile::many_relocated_children_compose_in_linear_time_and_memory
@@ -27,9 +27,10 @@ kinogaki-usd/format test hostile::variables_doubling_a_string_fail_without_the_d
 kinogaki-usd/format test import::a_dome_reads_its_image_by_op_and_key
 kinogaki-usd/format test import::a_left_handed_mesh_winds_its_faces_the_other_way
 kinogaki-usd/format test import::a_z_up_stage_lands_in_a_y_up_project_with_its_bindings_and_primvars
+kinogaki-usd/format test import::cameras_and_lights_look_where_the_stage_has_them_look_in_another_up_axis
 kinogaki-usd/format test import::damaged_files_fail_and_a_cancelled_read_stops
 kinogaki-usd/format test import::instances_share_one_prototype_and_point_instancers_place_theirs
-kinogaki-usd/format test import::the_import_dialog_offers_embed_textures_and_files_outside_off
+kinogaki-usd/format test import::the_import_dialog_offers_embed_textures_off
 kinogaki-usd/format test import::units_scale_points_and_lengths_but_no_placement
 kinogaki-usd/format test materials::a_material_keeps_its_sides_whatever_shows_it
 kinogaki-usd/format test materials::a_materials_lengths_move_into_the_projects_units
@@ -43,8 +44,7 @@ kinogaki-usd/format test measure::the_grid_writes_and_reads_back_whole
 kinogaki-usd/lib test lights::tests::a_lens_is_millimetres_whatever_the_stage_unit
 kinogaki-usd/lib test lights::tests::lights_read_and_write_back_in_any_units
 kinogaki-usd/lib test names::tests::file_names_end_asset_paths_inside_packages_too
-kinogaki-usd/lib test names::tests::naming_many_alike_takes_linear_time
-kinogaki-usd/lib test names::tests::prim_names_are_identifiers_and_unique
+kinogaki-usd/lib test names::tests::prim_names_are_identifiers
 kinogaki-usd/lib test names::tests::standard_primvars_are_renamed_both_ways_and_others_kept
 kinogaki-usd/lib test shading::tests::engine_values_read_back_as_their_kind
 kinogaki-usd/lib test shading::tests::materialx_values_read_back_through_their_usd_types
@@ -65,7 +65,6 @@ kinogaki-usd/lib test usd::crate_file::lz4::tests::rejects_damage
 kinogaki-usd/lib test usd::crate_file::lz4::tests::round_trips
 kinogaki-usd/lib test usd::package::crc32::tests::matches_the_standard_check_values
 kinogaki-usd/lib test usd::package::zip::tests::stored_archives_round_trip_aligned
-kinogaki-usd/lib test usd::parallel::tests::map_keeps_order
 kinogaki-usd/lib test usd::scene::matrix::tests::inverse_undoes
 kinogaki-usd/lib test usd::scene::matrix::tests::row_vector_convention
 kinogaki-usd/lib test usd::scene::shapes::tests::shapes_are_closed_and_outward

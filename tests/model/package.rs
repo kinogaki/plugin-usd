@@ -3,6 +3,7 @@
 
 use crate::common::{node, scene_of};
 use kinogaki_studio_api::format::ReadBudget;
+use kinogaki_studio_api_testing::format::Scratch;
 use kinogaki_usd::usd::package::{Bytes, Package};
 use kinogaki_usd::usd::scene::{self, Asset, AssetSource, NodeKind, ReadOptions};
 use kinogaki_usd::usd::sdf::{Token, Value};
@@ -95,7 +96,7 @@ fn a_file_in_memory_reads_nothing_from_disk() {
 #[test]
 fn a_scene_writes_as_a_usdz_with_its_assets_under_textures() {
     let scene = scene_of(&package());
-    let directory = scratch("usdz");
+    let directory = Scratch::new("usdz");
     let path = directory.join("lamp copy.usdz");
     scene::write_file(&scene, &path).unwrap();
     let written = Bytes::from(std::fs::read(&path).unwrap());
@@ -122,14 +123,13 @@ fn a_scene_writes_as_a_usdz_with_its_assets_under_textures() {
     );
     assert_eq!(&held(again.asset(file).unwrap())[..], PNG);
     assert_eq!(again.nodes, scene_of(&std::fs::read(&path).unwrap()).nodes);
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
 fn a_loose_layer_names_held_assets_as_authored_and_writes_nothing_beside_it() {
     // Writing files beside a layer is the format's (`format::files::Beside`).
     let scene = scene_of(&package());
-    let directory = scratch("loose");
+    let directory = Scratch::new("loose");
     let path = directory.join("lamp.usda");
     scene::write_file(&scene, &path).unwrap();
     let written: Vec<_> = std::fs::read_dir(&directory).unwrap().collect();
@@ -150,7 +150,6 @@ fn a_loose_layer_names_held_assets_as_authored_and_writes_nothing_beside_it() {
         "{:?}",
         again.assets
     );
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -173,13 +172,4 @@ fn a_package_inside_a_package_is_read_through() {
         .unwrap();
     assert_eq!(&held(paper)[..], PNG);
     assert_eq!(scene.nodes[0].name, Token::new("Room"));
-}
-
-/// A new empty directory for one test's files.
-fn scratch(name: &str) -> std::path::PathBuf {
-    let directory =
-        std::env::temp_dir().join(format!("kinogaki-usd-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&directory);
-    std::fs::create_dir_all(&directory).unwrap();
-    directory
 }

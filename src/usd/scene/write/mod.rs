@@ -17,6 +17,7 @@
 
 mod geometry;
 
+use kinogaki_studio_api::format::{Unique, files};
 use std::collections::HashMap;
 use std::path::Path as FilePath;
 use std::sync::Arc;
@@ -96,7 +97,8 @@ pub fn write_file(scene: &Scene, path: impl AsRef<FilePath>) -> Result<()> {
                 .map(|(name, bytes)| (name.as_str(), bytes.as_ref()))
                 .collect();
             let bytes = write_usdz(&layer, &format!("{stem}.usdc"), &entries).map_err(located)?;
-            std::fs::write(path, bytes).map_err(|e| located(e.into()))
+            let all = |file: &mut std::fs::File| std::io::Write::write_all(file, &bytes);
+            files::replace(path, all).map_err(|e| located(e.into()))
         }
         Format::Usda | Format::Usdc => {
             let layer = author_with(scene, &|p| written(scene, &HashMap::new(), p));
@@ -107,7 +109,7 @@ pub fn write_file(scene: &Scene, path: impl AsRef<FilePath>) -> Result<()> {
 
 /// Each asset that has bytes (held, or a picture on disk) named
 /// `<folder>/<its file name>`, names kept unique (`<stem>_1.<extension>`…,
-/// counted per name): the names by asset path, and the files.
+/// counted per name, case ignored): the names by asset path, and the files.
 #[allow(clippy::type_complexity)]
 fn packaged(
     assets: &[Asset],
@@ -115,26 +117,14 @@ fn packaged(
 ) -> Result<(HashMap<Token, Token>, Vec<(String, Bytes)>)> {
     let mut names = HashMap::new();
     let mut files: Vec<(String, Bytes)> = Vec::new();
-    let mut taken: HashMap<String, usize> = HashMap::new();
+    let mut taken = Unique::files();
     for asset in assets {
         let bytes = match &asset.source {
             AssetSource::Bytes(bytes) => bytes.clone(),
             AssetSource::File(file) if packable(file) => Bytes::from(std::fs::read(file)?),
             AssetSource::File(_) | AssetSource::Missing => continue,
         };
-        let file = file_name(&asset.path);
-        let (stem, extension) = match file.rfind('.') {
-            Some(dot) if dot > 0 => (&file[..dot], &file[dot..]),
-            _ => (file, ""),
-        };
-        let mut name = format!("{folder}/{file}");
-        let mut copy = taken.get(&name).copied().unwrap_or(0);
-        while taken.contains_key(&name) {
-            copy += 1;
-            name = format!("{folder}/{stem}_{copy}{extension}");
-        }
-        taken.insert(format!("{folder}/{file}"), copy);
-        taken.insert(name.clone(), 0);
+        let name = taken.take(&format!("{folder}/{}", file_name(&asset.path)));
         names.insert(asset.path.clone(), Token::new(&name));
         files.push((name, bytes));
     }

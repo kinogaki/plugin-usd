@@ -100,87 +100,71 @@ fn package_paths_open_usdz_files_alone_and_never_devices() {
         64,
     )
     .unwrap();
-    std::fs::write(dir.path().join("letter.docx"), zip).unwrap();
-    let scene = dir.path().join("scene.usda");
+    std::fs::write(dir.join("letter.docx"), zip).unwrap();
+    let scene = dir.join("scene.usda");
     let layer = textured(&["/dev/zero[sky.exr]", "letter.docx[word/document.xml]"]);
     std::fs::write(&scene, layer).unwrap();
-    for outside in [false, true] {
-        // Neither is a usdz: no entry is read, whatever the option says;
-        // what stays a path names no file.
-        let read = read_path(&scene, &[(options::OUTSIDE, outside)]);
-        for source in sources(&read) {
-            match source.file() {
-                ImageFile::Embedded(file) => panic!("{} read in", file.name()),
-                ImageFile::Path(path) => assert!(path.ends_with(']'), "{path}"),
-            }
+    // Neither is a usdz: no entry is read; what stays a path names no file.
+    let read = read_path(&scene, &[]);
+    for source in sources(&read) {
+        match source.file() {
+            ImageFile::Embedded(file) => panic!("{} read in", file.name()),
+            ImageFile::Path(path) => assert!(path.ends_with(']'), "{path}"),
         }
     }
 }
 
 #[test]
-fn layers_and_textures_outside_the_folder_are_left_unresolved() {
+fn layers_and_textures_outside_the_folder_are_read() {
     let dir = Scratch::new("hostile-reach");
-    std::fs::create_dir_all(dir.path().join("scene")).unwrap();
+    std::fs::create_dir_all(dir.join("scene")).unwrap();
     let secret = "#usda 1.0\ndef \"Secret\"\n{\n    def Cube \"Key\"\n    {\n    }\n}\n";
-    std::fs::write(dir.path().join("secret.usda"), secret).unwrap();
-    std::fs::write(dir.path().join("key.png"), b"\x89PNG\r\n\x1a\nkey").unwrap();
-    let absolute = dir.path().join("secret.usda").display().to_string();
+    std::fs::write(dir.join("secret.usda"), secret).unwrap();
+    std::fs::write(dir.join("key.png"), b"\x89PNG\r\n\x1a\nkey").unwrap();
+    let absolute = dir.join("secret.usda").display().to_string();
     let layer = format!(
         "#usda 1.0\n(\n    subLayers = [@../secret.usda@]\n)\ndef \"Mine\" (\n    references = @{absolute}@</Secret>\n)\n{{\n}}\n{}",
-        &textured(&["../key.png", "//server/share/a.png", "/net/host/a.png"])
-            ["#usda 1.0\n".len()..]
+        &textured(&["../key.png", "//server/share/a.png", "/dev/zero"])["#usda 1.0\n".len()..]
     );
-    let scene = dir.path().join("scene/scene.usda");
+    let scene = dir.join("scene/scene.usda");
     std::fs::write(&scene, layer).unwrap();
     let read = read_path(&scene, &[(options::EMBED, true)]);
+    // The layers compose and the picture is read in, wherever they are.
     let names: Vec<&str> = read.items.iter().map(|i| i.name.as_str()).collect();
-    assert!(
-        !names.contains(&"Key") && !names.contains(&"Secret"),
-        "{names:?}"
-    );
-    assert!(sources(&read).is_empty(), "{:?}", sources(&read));
-    let warnings = said(&read);
-    assert!(
-        warnings.contains("are left unresolved (Read Files Outside the Folder reads them)"),
-        "{warnings}"
-    );
-    for name in [
-        "/key.png",
-        "/secret.usda",
-        "/server/share/a.png",
-        "/net/host/a.png",
-    ] {
-        assert!(warnings.contains(name), "{name} in {warnings}");
-    }
-    // Asked, the layers compose and the picture is read in.
-    let anywhere = read_path(&scene, &[(options::EMBED, true), (options::OUTSIDE, true)]);
-    let names: Vec<&str> = anywhere.items.iter().map(|i| i.name.as_str()).collect();
     assert!(
         names.contains(&"Key") && names.contains(&"Secret"),
         "{names:?}"
     );
-    let key = sources(&anywhere).into_iter().find_map(|s| match s.file() {
+    let key = sources(&read).into_iter().find_map(|s| match s.file() {
         ImageFile::Embedded(file) => Some(file.bytes().to_vec()),
         ImageFile::Path(_) => None,
     });
     assert_eq!(key.as_deref(), Some(&b"\x89PNG\r\n\x1a\nkey"[..]));
+    // A device never, and what isn't there is said.
+    let warnings = said(&read);
+    assert!(warnings.contains("never read: /dev/zero"), "{warnings}");
+    assert!(warnings.contains("/server/share/a.png"), "{warnings}");
 }
 
 #[test]
-fn a_usdz_names_nothing_outside_itself_on_disk() {
+fn a_usdz_held_in_memory_reads_nothing_on_disk() {
     let dir = Scratch::new("hostile-usdz");
-    std::fs::write(dir.path().join("hosts"), b"127.0.0.1 localhost").unwrap();
-    let hosts = dir.path().join("hosts").display().to_string();
+    std::fs::write(dir.join("hosts"), b"127.0.0.1 localhost").unwrap();
+    let hosts = dir.join("hosts").display().to_string();
     let layer = kinogaki_usd::usd::text::read_usda(
         textured(&[hosts.as_str()]).as_bytes(),
         &Default::default(),
     )
     .unwrap();
     let package = kinogaki_usd::usd::package::write_usdz(&layer, "root.usdc", &[]).unwrap();
-    // Held in memory, it has no folder: nothing on disk is read.
+    // Held in memory, it has no folder: nothing on disk is read, and its
+    // textures keep the names it gives, as paths.
     let read = read_bytes("scene.usdz", &package, small()).unwrap();
-    assert!(sources(&read).is_empty(), "{:?}", sources(&read));
-    assert!(said(&read).contains("is held in memory"), "{}", said(&read));
+    let sources = sources(&read);
+    assert!(!sources.is_empty());
+    for source in sources {
+        assert_eq!(*source.file(), ImageFile::Path(hosts.as_str().into()));
+    }
 }
 
 #[test]
@@ -293,14 +277,10 @@ fn sublayers_named_over_and_over_stack_once() {
         let next = format!("@./l{}.usda@", level + 1);
         let list = [next.as_str(); 8].join(", ");
         let text = format!("#usda 1.0\n(\n    subLayers = [{list}]\n)\n");
-        std::fs::write(dir.path().join(format!("l{level}.usda")), text).unwrap();
+        std::fs::write(dir.join(format!("l{level}.usda")), text).unwrap();
     }
-    std::fs::write(
-        dir.path().join("l8.usda"),
-        "#usda 1.0\ndef Cube \"Deep\"\n{\n}\n",
-    )
-    .unwrap();
-    let read = read_path(&dir.path().join("l0.usda"), &[]);
+    std::fs::write(dir.join("l8.usda"), "#usda 1.0\ndef Cube \"Deep\"\n{\n}\n").unwrap();
+    let read = read_path(&dir.join("l0.usda"), &[]);
     assert!(read.items.iter().any(|i| i.name == "Deep"));
 }
 
@@ -421,13 +401,13 @@ fn a_layer_named_many_ways_is_read_once() {
         layer.push_str("    custom double padding = 0.000000000000000000000000000001\n");
     }
     layer.push_str("}\n");
-    std::fs::write(dir.path().join("big.usda"), &layer).unwrap();
+    std::fs::write(dir.join("big.usda"), &layer).unwrap();
     let links: Vec<String> = (0..64).map(|k| format!("@./link{k}.usda@")).collect();
     for k in 0..64 {
-        std::os::unix::fs::symlink("big.usda", dir.path().join(format!("link{k}.usda"))).unwrap();
+        std::os::unix::fs::symlink("big.usda", dir.join(format!("link{k}.usda"))).unwrap();
     }
     let root = format!("#usda 1.0\n(\n    subLayers = [{}]\n)\n", links.join(", "));
-    std::fs::write(dir.path().join("root.usda"), root).unwrap();
+    std::fs::write(dir.join("root.usda"), root).unwrap();
     // The files read may take the layer twice over, not 64 times.
     let limits = ReadLimits {
         bytes: 2 * layer.len() as u64,
@@ -435,7 +415,7 @@ fn a_layer_named_many_ways_is_read_once() {
     };
     let (read, _) = read_hostile(
         &Usd,
-        &Input::file(&dir.path().join("root.usda")),
+        &Input::file(&dir.join("root.usda")),
         &Usd.options(),
         limits,
     );
@@ -457,13 +437,13 @@ fn many_alike_names_export_in_linear_time() {
     };
     let groups = vec![group; 20_000];
     let start = std::time::Instant::now();
-    write_file(&dir.path().join("many.usda"), &groups, metres());
+    write_file(&dir.join("many.usda"), &groups, metres());
     assert!(
         start.elapsed() < Duration::from_secs(SECONDS),
         "{:?}",
         start.elapsed()
     );
-    let text = std::fs::read_to_string(dir.path().join("many.usda")).unwrap();
+    let text = std::fs::read_to_string(dir.join("many.usda")).unwrap();
     assert!(text.contains("\"Instance_19999\""));
 }
 
@@ -473,9 +453,9 @@ fn a_usdz_packs_pictures_and_nothing_else() {
     use kinogaki_studio_api::network::{NetworkSeed, NewNode};
     use kinogaki_studio_api::standard::{self, ImportedMaterial, Materials};
     let dir = Scratch::new("hostile-pack");
-    let png = dir.path().join("wood.png");
+    let png = dir.join("wood.png");
     std::fs::write(&png, b"\x89PNG\r\n\x1a\nwood").unwrap();
-    let key = dir.path().join("id_rsa.png");
+    let key = dir.join("id_rsa.png");
     std::fs::write(&key, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
     let mut inside = NetworkSeed::default();
     let surface = NewNode::materialx("ND_UsdPreviewSurface_surfaceshader").unwrap();
@@ -508,7 +488,7 @@ fn a_usdz_packs_pictures_and_nothing_else() {
         kinogaki_studio_api::FileItem::top("Looks", standard::materials().wrap(looks)),
         kinogaki_studio_api::FileItem::top("Square", standard::geometry().wrap(square)),
     ];
-    let path = dir.path().join("packed.usdz");
+    let path = dir.join("packed.usdz");
     let said = write_file(&path, &items, metres());
     let bytes =
         kinogaki_usd::usd::package::Package::open(std::fs::read(&path).unwrap().into()).unwrap();

@@ -197,9 +197,9 @@ def DomeLight "Sky"
 }
 "#;
     let dir = crate::support::Scratch::new("dome");
-    let path = dir.path().join("sky.usda");
+    let path = dir.join("sky.usda");
     std::fs::write(&path, layer).unwrap();
-    std::fs::write(dir.path().join("sky.exr"), b"not really an exr").unwrap();
+    std::fs::write(dir.join("sky.exr"), b"not really an exr").unwrap();
     let read = read_file(&path, metres(), true);
     let image = &materials(&read).images[0];
     assert_eq!(image.name, "sky");
@@ -223,7 +223,7 @@ def DomeLight "Sky"
 fn damaged_files_fail_and_a_cancelled_read_stops() {
     let usdc = {
         let dir = crate::support::Scratch::new("damaged");
-        let path = dir.path().join("cube.usdc");
+        let path = dir.join("cube.usdc");
         let read = read_file(&fixture("cube.usda"), metres(), false);
         crate::support::write_file(&path, &read.items, metres());
         std::fs::read(path).unwrap()
@@ -252,7 +252,7 @@ fn damaged_files_fail_and_a_cancelled_read_stops() {
 }
 
 #[test]
-fn the_import_dialog_offers_embed_textures_and_files_outside_off() {
+fn the_import_dialog_offers_embed_textures_off() {
     let options = Usd.options();
     assert_eq!(options.get("embed"), Some(&Value::Bool(false)));
     let schema = Usd.schema(&FormatOptions::new(), Purpose::Objects);
@@ -261,6 +261,61 @@ fn the_import_dialog_offers_embed_textures_and_files_outside_off() {
             .parameters()
             .map(|p| p.name.as_str())
             .collect::<Vec<_>>(),
-        ["embed", "outside"]
+        ["embed"]
     );
+}
+
+/// A camera and a light keep what they look at in a project of another up
+/// axis: their values look down their own −Z whatever the space, so their
+/// placements turn with the stage and are never turned back.
+#[test]
+fn cameras_and_lights_look_where_the_stage_has_them_look_in_another_up_axis() {
+    let dir = crate::support::Scratch::new("frames");
+    let path = dir.join("frames.usda");
+    let stage = r#"#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "World"
+{
+    double3 xformOp:translate = (0, 0, 5)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Camera "Down"
+    {
+    }
+
+    def RectLight "Lamp"
+    {
+        float inputs:width = 1
+        float inputs:height = 1
+    }
+}
+"#;
+    std::fs::write(&path, stage).unwrap();
+    let read = read_file(&path, metres(), false);
+    let (world, _) = item(&read, "World");
+    assert_eq!(
+        world.placement.origin(),
+        Vec3::new(0.0, 5.0, 0.0),
+        "Z up is Y up"
+    );
+    for name in ["Down", "Lamp"] {
+        let (it, data) = item(&read, name);
+        assert!(data.is_some(), "{name}");
+        // At the stage's identity each looks down the stage's −Z, the
+        // ground: the project's −Y.
+        let placed = world.placement.compose(&it.placement);
+        let looks = placed.apply_vector(-Vec3::Z);
+        assert!(
+            (looks - -Vec3::Y).length() < 1e-12,
+            "{name} looks along {looks:?}"
+        );
+        assert!(
+            (placed.apply_vector(Vec3::Y) - -Vec3::Z).length() < 1e-12,
+            "{name}"
+        );
+        assert_eq!(placed.origin(), Vec3::new(0.0, 5.0, 0.0));
+    }
 }

@@ -1,8 +1,10 @@
 //! Universal Scene Description: the format's own model, with no SDK in it
-//! but the process's workers and what bounds a read: its budget
-//! (`format::ReadBudget`), which every count and depth a file claims is
-//! checked against, and the resolver of the files a file names
-//! (`format::files::Named`), through which alone it reads the disk.
+//! but the process's workers (`parallel::map`), what bounds a read: its
+//! budget (`format::ReadBudget`), which every count and depth a file claims
+//! is checked against, and the resolver of the files a file names
+//! (`format::files::Named`), through which alone it reads the disk; and
+//! what a write shares: unique names (`format::Unique`) and files replaced
+//! whole (`format::files::replace`).
 //!
 //! - [`sdf`]: the data model, after OpenUSD's Sdf: a layer is specs keyed by
 //!   path, each a list of fields.
@@ -19,7 +21,6 @@ pub mod crate_file;
 mod error;
 mod layer_file;
 pub mod package;
-mod parallel;
 pub mod scene;
 pub mod sdf;
 pub mod shade;

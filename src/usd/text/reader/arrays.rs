@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use super::Reader;
 use crate::usd::error::Result;
-use crate::usd::parallel;
 use crate::usd::sdf::{Array, Half, Value, ValueKind};
+use kinogaki_studio_api::geometry::parallel;
 
 /// Text per parallel chunk.
 const CHUNK_BYTES: usize = 256 * 1024;

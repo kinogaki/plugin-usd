@@ -4,13 +4,12 @@
 //! (millimetres in a centimetre stage), the standard's millimetres; a
 //! light's color is linear Rec.709 unless the file says otherwise, the
 //! standard's the working space.
-use crate::shading::LINEAR_REC709;
 use crate::usd::scene::{Camera as UsdCamera, Cone, Light as UsdLight, LightKind, Projection};
 use crate::usd::sdf::Token;
 use kinogaki_render_api::standard::{Emission, Light, Shape};
 use kinogaki_render_api::{Camera, Projection as Lens};
 use kinogaki_studio_api::Error;
-use kinogaki_studio_api::color::ColorService;
+use kinogaki_studio_api::color::{ColorService, LIN_REC709};
 
 /// Millimetres a tenth of a stage unit of `meters_per_unit` is.
 fn millimetres(meters_per_unit: f64) -> f64 {
@@ -60,10 +59,7 @@ pub(crate) fn light(
         (None, false) => Emission::Color,
     };
     let mut color = [light.color];
-    let space = light
-        .color_space
-        .as_ref()
-        .map_or(LINEAR_REC709, Token::as_str);
+    let space = light.color_space.as_ref().map_or(LIN_REC709, Token::as_str);
     colors.to_working(space, &mut color)?;
     Ok(Light {
         shape,
@@ -115,7 +111,7 @@ pub(crate) fn usd_light(
         }
     }
     let mut color = [light.color.map(f64::from)];
-    colors.working_to(LINEAR_REC709, &mut color)?;
+    colors.working_to(LIN_REC709, &mut color)?;
     out.color = color[0];
     out.intensity = f64::from(light.intensity);
     out.exposure = f64::from(light.exposure);

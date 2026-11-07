@@ -43,7 +43,7 @@ fn looks(materials: Vec<ImportedMaterial>, images: Vec<ImportedImage>) -> FileIt
 #[test]
 fn polygons_come_back_where_they_were_in_any_units() {
     let dir = Scratch::new("units");
-    let path = dir.path().join("panel.usdc");
+    let path = dir.join("panel.usdc");
     let millimetres = Units::new(0.001, UpAxis::Z).unwrap();
     let grouped = square("/Looks/Red");
     let members = Elements::from_indices(1, [0]).unwrap();
@@ -107,7 +107,7 @@ fn polygons_come_back_where_they_were_in_any_units() {
 #[test]
 fn curves_come_back_of_their_basis() {
     let dir = Scratch::new("curves");
-    let path = dir.path().join("curves.usda");
+    let path = dir.join("curves.usda");
     let positions: Vec<[f64; 3]> = (0..8).map(|i| [i as f64, (i % 2) as f64, 0.0]).collect();
     let kinds = vec![
         Kind::curve(Basis::Bezier, false),
@@ -157,7 +157,7 @@ fn curves_come_back_of_their_basis() {
 #[test]
 fn instances_are_written_as_copies_each_with_its_material() {
     let dir = Scratch::new("copies");
-    let path = dir.path().join("row.usda");
+    let path = dir.join("row.usda");
     let leaf = standard::geometry().wrap(square(""));
     let xforms: Vec<Xform> = (0..3)
         .map(|i| Xform::translation(Vec3::new(i as f64, 0.0, 0.0)))
@@ -216,7 +216,7 @@ fn instances_are_written_as_copies_each_with_its_material() {
 #[test]
 fn lights_cameras_and_a_domes_image_come_back() {
     let dir = Scratch::new("lights");
-    let path = dir.path().join("stage.usdz");
+    let path = dir.join("stage.usdz");
     let sky = ImportedImage {
         key: "/Looks/Sky".into(),
         name: "Sky".into(),

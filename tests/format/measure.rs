@@ -9,63 +9,14 @@
 use crate::support::{Scratch, metres, read_file, write_file};
 use kinogaki_studio_api::FileItem;
 use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageFile, ImageSource};
-use kinogaki_studio_api::geometry::parallel::{self, Workers};
 use kinogaki_studio_api::geometry::{
     Attribute, Attributes, Domain, Geometry, Meaning, Primitives, Text, names,
 };
 use kinogaki_studio_api::image_files::image_node;
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
 use kinogaki_studio_api::standard::{self, ImportedMaterial, Materials};
-use std::ops::Range;
-use std::panic::Location;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-
-/// The workers a host installs: the calling thread and scoped helpers, one
-/// a core, taking ranges from a shared counter.
-struct Pool(usize);
-
-impl Workers for Pool {
-    fn run(
-        &self,
-        _: &'static Location<'static>,
-        len: usize,
-        minimum: usize,
-        work: &(dyn Fn(Range<usize>) -> bool + Sync),
-    ) {
-        let step = minimum.max(1);
-        let threads = self.0.min(len.div_ceil(step));
-        if threads <= 1 {
-            if len > 0 {
-                work(0..len);
-            }
-            return;
-        }
-        let (next, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
-        let take = || {
-            while !stop.load(Ordering::Relaxed) {
-                let start = next.fetch_add(step, Ordering::Relaxed);
-                if start >= len {
-                    break;
-                }
-                if !work(start..(start + step).min(len)) {
-                    stop.store(true, Ordering::Relaxed);
-                }
-            }
-        };
-        std::thread::scope(|scope| {
-            (1..threads).for_each(|_| _ = scope.spawn(take));
-            take();
-        });
-    }
-}
-
-/// The host's workers, installed once.
-fn workers() {
-    let threads = std::thread::available_parallelism().map_or(1, usize::from);
-    parallel::install(Box::leak(Box::new(Pool(threads))));
-}
 
 /// Quads along each side of the grid: 837² = 700,569 faces.
 const SIDE: usize = 837;
@@ -273,9 +224,9 @@ fn authored(path: &Path, megabytes: usize) {
 #[test]
 #[ignore = "hand: a release measurement of the grid"]
 fn hand_run_the_grid_reads_and_writes_within_its_budgets() {
-    workers();
+    kinogaki_studio_api_testing::workers::install(0);
     let dir = Scratch::new("measure");
-    let file = |name: &str| dir.path().join(name);
+    let file = |name: &str| dir.join(name);
     authored(&file("grid.usdc"), 0);
     authored(&file("grid.usda"), 0);
     authored(&file("grid.usdz"), 0);
@@ -307,7 +258,7 @@ fn hand_run_the_grid_reads_and_writes_within_its_budgets() {
 #[test]
 #[ignore = "hand: Pixar's Kitchen Set, not redistributable (KINOGAKI_KITCHEN_SET)"]
 fn hand_run_the_kitchen_set_imports_within_its_budget() {
-    workers();
+    kinogaki_studio_api_testing::workers::install(0);
     let path =
         std::env::var("KINOGAKI_KITCHEN_SET").expect("KINOGAKI_KITCHEN_SET names Kitchen_set.usd");
     let mut prims = 0;
@@ -320,7 +271,7 @@ fn hand_run_the_kitchen_set_imports_within_its_budget() {
 #[test]
 fn the_grid_writes_and_reads_back_whole() {
     let dir = Scratch::new("grid");
-    let path = dir.path().join("grid.usdc");
+    let path = dir.join("grid.usdc");
     write_file(&path, &items(0), metres());
     let read = read_file(&path, metres(), false);
     let grid = standard::geometry()

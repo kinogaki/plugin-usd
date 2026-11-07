@@ -18,7 +18,7 @@ mod materials;
 
 use crate::lights;
 use crate::names::file_name;
-use crate::space::Space;
+use crate::space;
 use crate::usd::package::Bytes;
 use crate::usd::scene::{Instancer, Node, NodeKind, ReadOptions, Scene};
 use crate::usd::sdf::Token;
@@ -62,7 +62,8 @@ pub(crate) fn read(
         .map_err(|e| failed(input, e))?;
     drop(stage);
     reading.check()?;
-    let space = Space::new(scene.meters_per_unit, scene.up_axis, reading.units);
+    let space = space::conversion(scene.meters_per_unit, scene.up_axis, reading.units)
+        .map_err(|e| Error::invalid(format!("{input}: {}", e.message())))?;
     let keys: Vec<Arc<str>> = (scene.materials.iter())
         .map(|m| Arc::from(m.path.to_string()))
         .collect();
@@ -72,7 +73,7 @@ pub(crate) fn read(
     let single = single_sided(&scene);
     for (k, material) in scene.materials.iter().enumerate() {
         reading.check()?;
-        let sides = (space.scale, single[k]);
+        let sides = (space.scale(), single[k]);
         let read = materials::material(material, &mut files, reading.colors, &mut warnings, sides);
         looks.materials.push(read);
     }
@@ -198,7 +199,11 @@ impl Walk<'_, '_> {
     /// `node` as an item under its parent's (`at`, each earlier node's).
     fn node(&mut self, node: &Node, at: &[At]) -> Result<At, Error> {
         let space = self.shaping.space;
-        let local = space.placement(&node.transform);
+        // A camera or a light keeps the frame it looks down.
+        let local = match node.kind {
+            NodeKind::Camera(_) | NodeKind::Light(_) => space.frame(&space::xform(&node.transform)),
+            _ => space.placement(&space::xform(&node.transform)),
+        };
         let above = node.parent.map(|p| at[p]);
         let world_above = above.map_or(Xform::IDENTITY, |a| a.world);
         let (placement, world) = match node.resets_transform {
@@ -255,14 +260,14 @@ impl Walk<'_, '_> {
             NodeKind::Points(points) => standard::geometry().wrap(geometry::points(points, cx)?),
             NodeKind::Camera(camera) => {
                 let space = cx.space;
-                let lens = lights::camera(camera, self.scene.meters_per_unit, space.scale);
+                let lens = lights::camera(camera, self.scene.meters_per_unit, space.scale());
                 match standard::lens(lens) {
                     Ok(lens) => standard::camera().wrap(lens),
                     Err(e) => return self.left_out(node, &e),
                 }
             }
             NodeKind::Light(light) => {
-                let scale = self.shaping.space.scale;
+                let scale = self.shaping.space.scale();
                 let image = light.texture.as_ref().and_then(|path| self.image(path));
                 match lights::light(light, scale, image, self.reading.colors) {
                     Ok(light) => standard::light().wrap(light),
@@ -343,7 +348,7 @@ impl Walk<'_, '_> {
             let named = usize::try_from(instancer.proto_indices[i]).ok();
             let index = named.and_then(|k| index_of.get(k).copied().flatten());
             if let (true, Some(index)) = (shown[i], index) {
-                xforms.push(space.placement(m));
+                xforms.push(space.placement(&space::xform(m)));
                 which.push(index);
             }
         }
@@ -438,7 +443,7 @@ impl Walk<'_, '_> {
         let mut parts = Vec::new();
         for node in &prototype.nodes {
             self.reading.check()?;
-            let local = space.placement(&node.transform);
+            let local = space.placement(&space::xform(&node.transform));
             let world = match (node.parent, node.resets_transform) {
                 (Some(parent), false) => worlds[parent].compose(&local),
                 _ => local,

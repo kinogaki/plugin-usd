@@ -68,7 +68,8 @@ pub fn layer_bytes(layer: &LayerData, format: Format) -> Result<Vec<u8>> {
     }
 }
 
-/// Write the layer to `path`, in the format its extension names.
+/// Write the layer to `path`, in the format its extension names, whole or
+/// not at all (the SDK's `files::replace`).
 pub fn write_layer(layer: &LayerData, path: impl AsRef<FilePath>) -> Result<()> {
     let path = path.as_ref();
     let name = path.display().to_string();
@@ -76,5 +77,7 @@ pub fn write_layer(layer: &LayerData, path: impl AsRef<FilePath>) -> Result<()> 
         Error::invalid("a USD file must end in .usda, .usdc, .usd or .usdz").in_file(name.clone())
     })?;
     let bytes = layer_bytes(layer, format).map_err(|error| error.in_file(name.clone()))?;
-    std::fs::write(path, bytes).map_err(|error| Error::from(error).in_file(name))
+    let all = |file: &mut std::fs::File| std::io::Write::write_all(file, &bytes);
+    kinogaki_studio_api::format::files::replace(path, all)
+        .map_err(|error| Error::from(error).in_file(name))
 }

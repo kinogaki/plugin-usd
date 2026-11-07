@@ -2,6 +2,7 @@
 //! variant selection, payload loading, layer offsets, instancing, cycles.
 
 use kinogaki_studio_api::format::ReadBudget;
+use kinogaki_studio_api_testing::format::Scratch;
 use std::path::PathBuf;
 
 use kinogaki_usd::usd::sdf::{LayerData, Path, Value, field};
@@ -156,9 +157,7 @@ fn stage_metadata_reads_the_root_layer() {
 
 #[test]
 fn packaged_layers_compose() {
-    let directory =
-        std::env::temp_dir().join(format!("kinogaki-usd-compose-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = Scratch::new("usd-compose");
     let model = kinogaki_usd::usd::text::read_usda(
         b"#usda 1.0\n(\n    defaultPrim = \"M\"\n)\n\ndef \"M\"\n{\n    custom int inside = 7\n}\n",
         &ReadBudget::default(),
@@ -173,29 +172,10 @@ fn packaged_layers_compose() {
     .unwrap();
     let mut stage = crate::common::open(directory.join("root.usda")).unwrap();
     let layer = stage.flatten().unwrap();
-    std::fs::remove_dir_all(&directory).ok();
     assert_eq!(
         layer.get(&p("/Use.inside"), field::DEFAULT),
         Some(&Value::Int(7))
     );
-}
-
-/// A scratch directory for generated layers, removed when dropped.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Scratch {
-        let directory =
-            std::env::temp_dir().join(format!("kinogaki-usd-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        Scratch(directory)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
 }
 
 #[test]
@@ -207,12 +187,12 @@ fn deep_arc_chains_fail_cleanly() {
             "#usda 1.0\n\ndef \"P\" (\n    references = @./l{}.usda@</P/C>\n)\n{{\n    def \"C\"\n    {{\n    }}\n}}\n",
             at + 1
         );
-        std::fs::write(scratch.0.join(format!("l{at}.usda")), body).unwrap();
+        std::fs::write(scratch.join(format!("l{at}.usda")), body).unwrap();
     }
     let result = std::thread::Builder::new()
         .stack_size(kinogaki_studio_api_testing::IMPORT_STACK)
         .spawn({
-            let root = scratch.0.join("l0.usda");
+            let root = scratch.join("l0.usda");
             move || {
                 crate::common::open(root)
                     .and_then(|mut stage| stage.flatten())
@@ -227,9 +207,9 @@ fn deep_arc_chains_fail_cleanly() {
     // 400 sublayers deep: past the sublayer limit.
     for at in 0..400 {
         let body = format!("#usda 1.0\n(\n    subLayers = [@./s{}.usda@]\n)\n", at + 1);
-        std::fs::write(scratch.0.join(format!("s{at}.usda")), body).unwrap();
+        std::fs::write(scratch.join(format!("s{at}.usda")), body).unwrap();
     }
-    assert!(crate::common::open(scratch.0.join("s0.usda")).is_err());
+    assert!(crate::common::open(scratch.join("s0.usda")).is_err());
 }
 
 #[test]
@@ -245,7 +225,7 @@ fn mutated_layers_never_panic() {
     .map(|name| std::fs::read(fixture(name)).unwrap())
     .collect();
     for name in ["livrps_ref.usda", "livrps_payload.usda", "offsets_sub.usda"] {
-        std::fs::copy(fixture(name), scratch.0.join(name)).unwrap();
+        std::fs::copy(fixture(name), scratch.join(name)).unwrap();
     }
     let mut state = 0x2545_f491_4f6c_dd1d_u64;
     let mut next = move || {
@@ -267,7 +247,7 @@ fn mutated_layers_never_panic() {
                 _ => bytes.insert(at, alphabet[(next() as usize) % alphabet.len()]),
             }
         }
-        let root = scratch.0.join("root.usda");
+        let root = scratch.join("root.usda");
         std::fs::write(&root, &bytes).unwrap();
         if let Ok(mut stage) = crate::common::open(&root) {
             let _ = stage.flatten();

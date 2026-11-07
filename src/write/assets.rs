@@ -6,11 +6,12 @@
 //! them as every written document does ([`Beside`]): a file on disk by its
 //! path relative to the layer, an embedded file written into
 //! `<stem>_textures` beside it.
-use crate::names::{Unique, file_name};
+use crate::names::file_name;
 use crate::usd::package::{Buffer, Bytes, packable};
 use crate::usd::scene::{Asset, AssetSource};
 use crate::usd::sdf::Token;
 use kinogaki_studio_api::Error;
+use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::format::files::Beside;
 use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageFile};
 use std::collections::HashMap;
@@ -35,16 +36,28 @@ pub(super) enum Assets {
 }
 
 /// The assets a usdz packs.
-#[derive(Default)]
 pub(super) struct Packed {
     assets: Vec<Asset>,
     /// Each file on disk's asset path, made once.
     paths: HashMap<Arc<str>, Token>,
     /// Each embedded file's asset path, by its bytes' hash.
     embedded: HashMap<[u8; 32], Token>,
+    /// The packed files' names, ignoring case.
     names: Unique,
     /// Files on disk left as paths: no picture a usdz holds.
     pub left: Vec<String>,
+}
+
+impl Default for Packed {
+    fn default() -> Self {
+        Packed {
+            assets: Vec::new(),
+            paths: HashMap::new(),
+            embedded: HashMap::new(),
+            names: Unique::files(),
+            left: Vec::new(),
+        }
+    }
 }
 
 impl Assets {
@@ -109,7 +122,7 @@ impl Packed {
                 if let Some(token) = self.embedded.get(file.hash()) {
                     return token.clone();
                 }
-                let token = Token::new(&self.names.take_file(file_name(file.name())));
+                let token = Token::new(&self.names.take(file_name(file.name())));
                 let buffer: Buffer = Arc::new(Held(file.clone()));
                 self.assets.push(Asset {
                     path: token.clone(),

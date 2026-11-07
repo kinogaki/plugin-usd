@@ -15,15 +15,16 @@
 //! which a host without that engine takes. Shaders no terminal reaches
 //! travel with the kept network (D20).
 use super::files::Files;
-use crate::names::{self, Unique, file_name};
+use crate::names::{self, file_name};
 use crate::shading::{
-    self, DOUBLE_SIDED_KEY, KINOGAKI, LINEAR_REC709, MTLX, NAME_KEY, OPACITY_MODES, UNIVERSAL,
-    terminal,
+    self, DOUBLE_SIDED_KEY, KINOGAKI, MTLX, NAME_KEY, OPACITY_MODES, UNIVERSAL, terminal,
 };
 use crate::usd::sdf::{Token, Value as Usd};
 use crate::usd::shade::{Material, Port, ShadeKind, Source};
 use kinogaki_mtlx::NodeDef;
-use kinogaki_studio_api::color::ColorService;
+use kinogaki_studio_api::color::{ColorService, LIN_REC709, SRGB_TEXTURE};
+use kinogaki_studio_api::format::Unique;
+use kinogaki_studio_api::format::materialx;
 use kinogaki_studio_api::geometry::image::{ImageColor, ImageSource};
 use kinogaki_studio_api::image_files::image_node;
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
@@ -373,12 +374,10 @@ impl<'m> Reader<'m, '_, '_> {
         let source = (self.material.nodes[n].input("sourceColorSpace"))
             .and_then(|p| p.value.as_ref())
             .and_then(shading::text);
-        match (source, file.color_space.as_deref()) {
-            (Some("raw"), _) => ImageColor::Data,
-            (Some("sRGB"), _) => ImageColor::Space(Arc::from("srgb_texture")),
-            (_, Some("raw" | "none" | "data")) => ImageColor::Data,
-            (_, Some(space)) => ImageColor::Space(Arc::from(space)),
-            (_, None) => ImageColor::Auto,
+        match source {
+            Some("raw") => ImageColor::Data,
+            Some("sRGB") => ImageColor::space(SRGB_TEXTURE).expect("a space's name"),
+            _ => materialx::image_color(file.color_space.as_deref()),
         }
     }
 
@@ -390,7 +389,7 @@ impl<'m> Reader<'m, '_, '_> {
             Value::Numbers(n) if color4 => &mut n[..3],
             _ => return,
         };
-        let from = space.map_or(LINEAR_REC709, Token::as_str);
+        let from = space.map_or(LIN_REC709, Token::as_str);
         let mut held = [[rgb[0], rgb[1], rgb[2]]];
         match self.colors.to_working(from, &mut held) {
             Ok(()) => rgb.copy_from_slice(&held[0]),

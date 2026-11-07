@@ -16,22 +16,17 @@
 //! the format's parallel steps.
 
 use std::io::Write;
-use std::ops::Range;
-use std::panic::Location;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use kinogaki_studio_api::format::ReadBudget;
 use kinogaki_studio_api::format::files::Named;
-use kinogaki_studio_api::format::{ReadBudget, options};
-use kinogaki_studio_api::geometry::parallel::{self, Workers};
-use kinogaki_studio_api::{FormatOptions, Input, Purpose, Reading, Units, Value};
-use kinogaki_studio_api_testing::Unconverted;
+use kinogaki_studio_api::{FormatOptions, Input, Purpose, Reading, Units};
+use kinogaki_studio_api_testing::{Unconverted, workers};
 use kinogaki_usd::usd::scene::{self, NodeKind, ReadOptions};
 use kinogaki_usd::usd::{self as usd, Result, Stage, StageOptions, crate_file, package, text};
 
 fn main() -> ExitCode {
-    let threads = std::thread::available_parallelism().map_or(1, usize::from);
-    parallel::install(Box::leak(Box::new(Pool { threads })));
+    workers::install(0);
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let runs = |at: usize| arguments.get(at).and_then(|r| r.parse().ok()).unwrap_or(5);
     let result = match arguments
@@ -74,14 +69,11 @@ fn read(input: &str) -> Result<usd::sdf::LayerData> {
     usd::read_layer_bytes(&bytes, &ReadBudget::default()).map_err(|e| e.in_file(input))
 }
 
-/// The stage rooted at `input`, reading every file it names wherever it
-/// is: the tool reads what its user points it at (Import reads only the
-/// file's folder unless asked).
+/// The stage rooted at `input`, reading every file it names.
 fn open(input: &str) -> Result<Stage> {
     let reading = Reading::new(Purpose::Objects, Units::default(), &Unconverted);
-    let outside = FormatOptions::from([(options::OUTSIDE.to_owned(), Value::Bool(true))]);
     let path = std::path::Path::new(input);
-    let disk = Named::new(&Input::file(path), &outside, &reading);
+    let disk = Named::new(&Input::file(path), &FormatOptions::new(), &reading);
     let options = StageOptions {
         disk: Some(std::sync::Arc::new(disk)),
         ..StageOptions::default()
@@ -319,47 +311,4 @@ fn grid(output: &str, n: usize, megabytes: Option<usize>) -> Result<()> {
     }
     scene.nodes.push(plane);
     scene::write_file(&scene, output)
-}
-
-/// The workers a host installs: the calling thread and scoped helpers, one
-/// per core, taking ranges from a shared counter.
-struct Pool {
-    threads: usize,
-}
-
-impl Workers for Pool {
-    fn run(
-        &self,
-        _site: &'static Location<'static>,
-        len: usize,
-        minimum: usize,
-        work: &(dyn Fn(Range<usize>) -> bool + Sync),
-    ) {
-        let step = minimum.max(1);
-        let threads = self.threads.min(len.div_ceil(step));
-        if threads <= 1 {
-            if len > 0 {
-                work(0..len);
-            }
-            return;
-        }
-        let (next, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
-        let take = || {
-            while !stop.load(Ordering::Relaxed) {
-                let start = next.fetch_add(step, Ordering::Relaxed);
-                if start >= len {
-                    break;
-                }
-                if !work(start..(start + step).min(len)) {
-                    stop.store(true, Ordering::Relaxed);
-                }
-            }
-        };
-        std::thread::scope(|scope| {
-            for _ in 1..threads {
-                scope.spawn(take);
-            }
-            take();
-        });
-    }
 }

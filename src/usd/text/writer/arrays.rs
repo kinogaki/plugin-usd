@@ -8,9 +8,9 @@
 
 use std::collections::HashMap;
 
-use crate::usd::parallel;
 use crate::usd::sdf::{Array, Half, LayerData, Value};
 use crate::usd::text::number::{write_f32, write_f64, write_half, write_integer, write_unsigned};
+use kinogaki_studio_api::geometry::parallel;
 
 /// Arrays longer than this format in parallel chunks.
 const PARALLEL_ELEMENTS: usize = 32 * 1024;

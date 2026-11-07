@@ -12,6 +12,7 @@
 use crate::support::{
     Scratch, materials, metres, read_file, read_with, shape, square, stage, write_file,
 };
+use kinogaki_studio_api::color::SRGB_TEXTURE;
 use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageColor, ImageFile, ImageSource};
 use kinogaki_studio_api::geometry::{
     Attribute, Attributes, Domain, Geometry, Primitives, Text, names,
@@ -133,7 +134,7 @@ fn preview() -> ImportedMaterial {
             .named("Reader")
             .with("varname", Value::Text("uv".into())),
     );
-    let srgb = ImageColor::Space(Arc::from("srgb_texture"));
+    let srgb = ImageColor::space(SRGB_TEXTURE).unwrap();
     let source = ImageSource::new(ImageFile::Path(Arc::from("/maps/leaf.png")), srgb);
     let image = inside.node(image_node::reading(&source).named("leaf"));
     inside.wire(image, image_node::IMAGE, texture, "file");
@@ -176,7 +177,7 @@ fn contexts(path: &std::path::Path) -> Vec<Vec<String>> {
 #[test]
 fn an_engines_material_comes_back_as_itself_from_a_usdz() {
     let dir = Scratch::new("engine");
-    let path = dir.path().join("panel.usdz");
+    let path = dir.join("panel.usdz");
     let written = anodized();
     write_file(&path, &items(vec![written.clone()]), metres());
     // Every network it has: the engine's, its standard form, and a USD
@@ -208,7 +209,7 @@ fn an_engines_material_comes_back_as_itself_from_a_usdz() {
 #[test]
 fn a_materialx_material_and_its_packaged_texture_come_back_as_they_were() {
     let dir = Scratch::new("mtlx");
-    let path = dir.path().join("table.usdz");
+    let path = dir.join("table.usdz");
     let bytes: Vec<u8> = (0..4096u32).map(|i| (i * 7 % 251) as u8).collect();
     let file = EmbeddedFile::new("wood.png", bytes);
     let written = wood(&file);
@@ -225,7 +226,7 @@ fn a_materialx_material_and_its_packaged_texture_come_back_as_they_were() {
 #[test]
 fn a_usd_preview_surface_comes_back_as_it_was_and_alone() {
     let dir = Scratch::new("preview");
-    let path = dir.path().join("leaf.usda");
+    let path = dir.join("leaf.usda");
     let written = preview();
     write_file(&path, &items(vec![written.clone()]), metres());
     assert_eq!(contexts(&path), [["surface"]]);
@@ -251,7 +252,7 @@ fn a_usd_preview_surface_comes_back_as_it_was_and_alone() {
 #[test]
 fn other_applications_see_the_textured_base_color_in_the_preview() {
     let dir = Scratch::new("other");
-    let path = dir.path().join("table.usdz");
+    let path = dir.join("table.usdz");
     let file = EmbeddedFile::new("wood.png", vec![1, 2, 3, 4]);
     write_file(&path, &items(vec![wood(&file)]), metres());
     let mut stage = stage(&path);
@@ -285,7 +286,7 @@ fn other_applications_see_the_textured_base_color_in_the_preview() {
 #[test]
 fn a_usdz_texture_reads_back_embedded_as_a_range_of_the_package() {
     let dir = Scratch::new("packaged");
-    let path = dir.path().join("table.usdz");
+    let path = dir.join("table.usdz");
     let bytes: Vec<u8> = (0..100_000u32).map(|i| (i % 253) as u8).collect();
     let file = EmbeddedFile::new("wood.png", bytes.clone());
     write_file(&path, &items(vec![wood(&file)]), metres());
@@ -370,7 +371,7 @@ fn gltf(file: &EmbeddedFile) -> ImportedMaterial {
 #[test]
 fn kinogakis_textures_travel_as_materialx_ones_and_come_back_as_themselves() {
     let dir = Scratch::new("gltf");
-    let path = dir.path().join("box.usdz");
+    let path = dir.join("box.usdz");
     let file = EmbeddedFile::new("box.png", vec![1, 2, 3, 4]);
     let written = gltf(&file);
     write_file(&path, &items(vec![written.clone()]), metres());
@@ -430,7 +431,7 @@ fn two_faces(a: &str, b: &str) -> Geometry {
 #[test]
 fn a_material_keeps_its_sides_whatever_shows_it() {
     let dir = Scratch::new("sides");
-    let path = dir.path().join("sides.usda");
+    let path = dir.join("sides.usda");
     let file = EmbeddedFile::new("box.png", vec![1, 2, 3, 4]);
     // A single-sided material no mesh shows (one of a glTF's variants), and
     // a double-sided one on a mesh beside a single-sided one.
@@ -470,7 +471,7 @@ fn a_material_keeps_its_sides_whatever_shows_it() {
 fn a_materials_lengths_move_into_the_projects_units() {
     use kinogaki_studio_api::geometry::{Units, UpAxis};
     let dir = Scratch::new("lengths");
-    let path = dir.path().join("glass.usda");
+    let path = dir.join("glass.usda");
     let file = EmbeddedFile::new("box.png", vec![1, 2, 3, 4]);
     let millimetres = Units::new(0.001, UpAxis::Y).unwrap();
     let centimetres = Units::new(0.01, UpAxis::Y).unwrap();
@@ -502,7 +503,7 @@ fn a_materials_lengths_move_into_the_projects_units() {
 #[ignore = "hand: Apple's usdchecker, a local oracle"]
 fn hand_run_usdchecker_arkit_passes_materialx_and_preview_surface_usdz() {
     let dir = Scratch::new("arkit");
-    let path = dir.path().join("table.usdz");
+    let path = dir.join("table.usdz");
     // A PNG of one pixel: what usdchecker's texture check reads.
     let png = [
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
