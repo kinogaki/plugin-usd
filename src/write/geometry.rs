@@ -23,9 +23,10 @@ pub(super) struct Prims {
 }
 
 /// What writing geometry needs: each material's index in the scene by its
-/// key, and the working space's name.
+/// key, whether each is double-sided, and the working space's name.
 pub(super) struct Shaping<'a> {
     pub materials: &'a HashMap<Arc<str>, usize>,
+    pub double_sided: &'a [bool],
     pub working: &'a str,
 }
 
@@ -138,6 +139,12 @@ fn mesh(
             material: None,
         });
     }
+    // A mesh's `doubleSided` is its materials' Double Sided (and on where
+    // it shows none, as Studio's default material is).
+    let shown = material
+        .into_iter()
+        .chain(subsets.iter().filter_map(|s| s.material));
+    let double_sided = shown.into_iter().all(|m| cx.double_sided[m]);
     let mesh = Mesh {
         points: positions(value, 0..value.positions().len()),
         face_vertex_counts: Arc::new(counts),
@@ -146,7 +153,7 @@ fn mesh(
         primvars,
         subdivision: Subdivision::default(),
         subsets,
-        double_sided: false,
+        double_sided,
     };
     (mesh, material)
 }

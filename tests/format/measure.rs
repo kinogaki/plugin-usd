@@ -132,6 +132,7 @@ fn items(megabytes: usize) -> Vec<FileItem> {
         name: "Checker".into(),
         inside,
         standard: None,
+        double_sided: true,
     };
     let looks = Materials {
         materials: vec![material],

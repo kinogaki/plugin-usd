@@ -1,6 +1,6 @@
 //! Items written as one USD layer: a usda, a usdc, or a usdz carrying the
 //! files its materials and domes name under `textures/` (a usda or usdc
-//! writes embedded files beside it, in `<stem>_textures/`).
+//! names them as every written document does: [`assets`]).
 //!
 //! The stage is in the project's units (`metersPerUnit`, `upAxis`), its
 //! default prim the one group the items are under (else one named after the
@@ -64,8 +64,9 @@ impl FormatWriter for Writer {
                 meters_per_unit: units.meters_per_unit(),
                 ..Scene::default()
             },
-            assets: Assets::default(),
+            assets: Assets::of(path),
             materials: HashMap::new(),
+            double_sided: Vec::new(),
             images: HashMap::new(),
             prototypes: Vec::new(),
             writing,
@@ -119,7 +120,7 @@ impl FormatWriter for Writer {
             .into_iter()
             .map(|(_, p)| p)
             .collect();
-        out.scene.assets = std::mem::take(&mut out.assets.assets);
+        out.scene.assets = std::mem::replace(&mut out.assets, Assets::of(path)).assets();
         writing.check()?;
         crate::usd::scene::write_file(&out.scene, path)
             .map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
@@ -149,6 +150,8 @@ struct Out<'w> {
     assets: Assets,
     /// Each material's index in the scene, by its key.
     materials: HashMap<Arc<str>, usize>,
+    /// Whether each of the scene's materials is double-sided.
+    double_sided: Vec<bool>,
     /// The file each image domes name by `op:` reads, by its key.
     images: HashMap<String, ImageFile>,
     /// Each prototype written, by the value it is.
@@ -174,6 +177,7 @@ impl Out<'_> {
                 materials::material(material, path, &mut self.assets, colors, &mut self.warnings)?;
             self.materials
                 .insert(Arc::from(material.key.as_str()), self.scene.materials.len());
+            self.double_sided.push(material.double_sided);
             self.scene.materials.push(made);
         }
         for image in &held.images {
@@ -262,6 +266,7 @@ impl Out<'_> {
         };
         let shaping = Shaping {
             materials: &self.materials,
+            double_sided: &self.double_sided,
             working: self.writing.colors.working(),
         };
         let prims = geometry::prims(value, &shaping, &mut self.warnings);
@@ -282,7 +287,14 @@ impl Out<'_> {
             },
             None => ImageFile::Path(Arc::from(image)),
         };
-        Some(self.assets.file(&file))
+        match self.assets.file(&file) {
+            Ok(asset) => Some(asset),
+            Err(e) => {
+                self.warnings
+                    .push(format!("a dome's image: {}; left out", e.message()));
+                None
+            }
+        }
     }
 
     /// `instances` as copies: a node a placement, showing its prototype,

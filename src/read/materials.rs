@@ -80,6 +80,7 @@ pub(super) fn material(
         name,
         inside,
         standard,
+        double_sided: true,
     }
 }
 

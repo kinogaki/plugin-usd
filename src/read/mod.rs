@@ -30,7 +30,9 @@ use kinogaki_studio_api::format::options;
 use kinogaki_studio_api::geometry::image::ImageSource;
 use kinogaki_studio_api::geometry::{Attribute, Attributes, Column, Domain, Text, Xform, names};
 use kinogaki_studio_api::image_files::OP;
-use kinogaki_studio_api::standard::{self, ImportedImage, Instances, MAX_DEPTH, Materials};
+use kinogaki_studio_api::standard::{
+    self, ImportedImage, ImportedMaterial, Instances, MAX_DEPTH, Materials,
+};
 use kinogaki_studio_api::{
     Data, Diagnostic, Error, FileItem, FormatOptions, Imported, Input, Reading, Value,
 };
@@ -68,10 +70,14 @@ pub(crate) fn read(
     let mut files = Files::new(&scene, &held, input.path().is_some(), embed);
     let mut warnings = scene.warnings.clone();
     let mut looks = Materials::default();
-    for material in &scene.materials {
+    let single = single_sided(&scene);
+    for (k, material) in scene.materials.iter().enumerate() {
         reading.check()?;
         let read = materials::material(material, &mut files, reading.colors, &mut warnings);
-        looks.materials.push(read);
+        looks.materials.push(ImportedMaterial {
+            double_sided: !single[k],
+            ..read
+        });
     }
     let mut walk = Walk {
         scene: &scene,
@@ -112,6 +118,32 @@ pub(crate) fn read(
         items: all,
         warnings: said(warnings),
     })
+}
+
+/// Each material's sidedness: a mesh's `doubleSided` is its material's
+/// Double Sided, so a material a single-sided mesh shows is single-sided.
+fn single_sided(scene: &Scene) -> Vec<bool> {
+    let mut single = vec![false; scene.materials.len()];
+    let nodes = scene
+        .nodes
+        .iter()
+        .chain(scene.prototypes.iter().flat_map(|p| &p.nodes));
+    for node in nodes {
+        let (sides, subsets) = match &node.kind {
+            NodeKind::Mesh(mesh) => (mesh.double_sided, &mesh.subsets[..]),
+            NodeKind::Shape(shape) => (shape.double_sided, &[][..]),
+            _ => continue,
+        };
+        if sides {
+            continue;
+        }
+        let bound = node
+            .material
+            .into_iter()
+            .chain(subsets.iter().filter_map(|s| s.material));
+        bound.for_each(|m| single[m] = true);
+    }
+    single
 }
 
 /// A failed read as ours, naming the input.

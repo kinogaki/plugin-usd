@@ -29,6 +29,7 @@ fn plain(key: &str, name: &str) -> ImportedMaterial {
         name: name.into(),
         inside,
         standard: None,
+        double_sided: true,
     }
 }
 

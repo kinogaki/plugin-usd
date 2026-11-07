@@ -1,19 +1,22 @@
 //! A USD Preview Surface made from a MaterialX network, for applications
 //! reading no other render context (AR Quick Look, most viewers).
 //!
-//! The shown surface's model is translated by MaterialX's own translation
-//! graphs (`open_pbr_to_standard_surface`, then
-//! `standard_surface_to_UsdPreviewSurface`; Kinogaki's from glTF PBR and
-//! Surface Unlit), evaluated on its inputs' values. A texture feeding an
-//! input carries over as a USD UV Texture of the same file: the outputs it
-//! moves, and how (the graphs are affine in it), are found by evaluating
-//! them with that input at zero and at one, which gives the texture's
-//! `scale` and `bias`. A normal map carries over into `normal`. Anything
-//! else feeding the surface (a procedural, arithmetic over textures)
-//! leaves its input at its value, said.
+//! The shown surface is translated as every format translates a material
+//! into its own model (`MaterialNetwork::translated`: MaterialX's and
+//! Kinogaki's translation graphs, folded). What is left feeding the USD
+//! Preview Surface is made of its own nodes: a texture (MaterialX's
+//! `image`, glTF's, a USD UV Texture) carries over as a USD UV Texture of
+//! the same file, and the arithmetic the translation left between it and
+//! the input (a base color scaled by its weight) is its `scale` and `bias`,
+//! found by evaluating that arithmetic with the texture at zero and at one.
+//! A normal map carries over into `normal`. Anything else feeding the
+//! surface (a procedural, arithmetic over two textures) leaves its input at
+//! its default, said.
 use super::materials::definition;
 use crate::names;
-use kinogaki_mtlx::{Binding, Graph, NodeDef, Type, Value as M, library};
+use kinogaki_mtlx::{Type, Value as M};
+use kinogaki_render_api::MaterialNetwork;
+use kinogaki_render_api::material::mtlx::SIGNATURE;
 use kinogaki_studio_api::Value;
 use kinogaki_studio_api::image_files::IMAGE_NODE;
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
@@ -33,127 +36,147 @@ pub(super) fn preview(seed: &NetworkSeed) -> (Option<NetworkSeed>, Vec<String>) 
 }
 
 fn make(seed: &NetworkSeed, said: &mut Vec<String>) -> Option<NetworkSeed> {
-    let shown = seed.nodes.iter().position(|n| n.display)?;
-    let surface = match definition(&seed.nodes[shown]) {
-        Some(def) if def.node == "surfacematerial" => wired(seed, shown, "surfaceshader")?.0,
+    let translated = MaterialNetwork::try_from(seed)
+        .map_err(|e| said.push(format!("no USD Preview Surface: {}", e.message())))
+        .ok()?
+        .translated("UsdPreviewSurface");
+    let Some(translated) = translated else {
+        said.push("its surface translates to no USD Preview Surface".into());
+        return None;
+    };
+    let folded = NetworkSeed::from(&translated);
+    let shown = folded.nodes.iter().position(|n| n.display)?;
+    let surface = match definition(&folded.nodes[shown]) {
+        Some(def) if def.node == "surfacematerial" => wired(&folded, shown, "surfaceshader")?.0,
         _ => shown,
     };
-    let Some(def) = definition(&seed.nodes[surface]) else {
-        said.push("its standard form has no MaterialX surface; no USD Preview Surface".into());
-        return None;
-    };
-    let Some(chain) = library().translation(&def.node, |m| m == "UsdPreviewSurface") else {
-        said.push(format!(
-            "{} has no translation into USD Preview Surface",
-            def.node
-        ));
-        return None;
-    };
-    // The surface's inputs: values, and textures.
-    let mut values: HashMap<String, M> = HashMap::new();
-    let mut textures: Vec<(&str, Texture)> = Vec::new();
-    let mut normal: Option<Texture> = None;
-    for port in &def.inputs {
-        match wired(seed, surface, &port.name) {
-            Some((from, output)) => {
-                let node = &seed.nodes[from];
-                let normals = definition(node)
-                    .is_some_and(|d| d.node == "normalmap" || d.node == "gltf_normalmap");
-                if port.ty == Type::Vector3 && port.geomprop.as_deref() == Some("Nworld") {
-                    normal = match normals {
-                        true => {
-                            texture_into(seed, from, "in").or_else(|| texture(seed, from, output))
-                        }
-                        false => None,
-                    };
-                    if normal.is_none() {
-                        said.push(format!(
-                            "{} reads no normal map USD Preview Surface holds; left out",
-                            port.name
-                        ));
-                    }
-                    continue;
-                }
-                match texture(seed, from, output) {
-                    Some(t) => textures.push((&port.name, t)),
-                    None => said.push(format!(
-                        "{}'s network has no USD Preview Surface form; its value stands",
-                        port.name
-                    )),
-                }
-            }
-            None => {
-                let held = seed.nodes[surface].parameters.get(&port.name);
-                if let Some(v) = held.and_then(mtlx_of) {
-                    values.insert(port.name.clone(), v);
-                }
-            }
-        }
-    }
-    let base = translate(&chain, &values);
-    let target = library().def(SURFACE)?;
+    let target = definition(&folded.nodes[surface]).filter(|d| d.name == SURFACE)?;
     let mut out = NetworkSeed::default();
     let at = out.node(NewNode::materialx(SURFACE)?.named("Preview").displayed());
-    // What differs from USD Preview Surface's defaults.
-    for (name, value) in &base {
-        if let Some(port) = target.input(name)
-            && port.value.as_ref() != Some(value)
-            && let Some(v) = value_of(value, &port.ty)
-        {
-            out.nodes[at].parameters.insert(name.clone(), v);
+    // Its values that differ from USD Preview Surface's defaults.
+    for (name, value) in &folded.nodes[surface].parameters {
+        let default = target.input(name).and_then(|p| p.value.as_ref());
+        if name != SIGNATURE && mtlx_of(value).as_ref() != default {
+            out.nodes[at].parameters.insert(name.clone(), value.clone());
         }
     }
     let mut made = Made::default();
-    for (input, texture) in &textures {
-        let width = def.input(input).map_or(1, |p| p.ty.width().max(1));
-        let at_value = |k: f64| {
-            let mut v = values.clone();
-            v.insert((*input).to_owned(), M::Numbers(vec![k; width]));
-            translate(&chain, &v)
+    for wire in folded.wires.iter().filter(|w| w.to == surface) {
+        let input = wire.input.as_str();
+        let Some(port) = target.input(input) else {
+            continue;
         };
-        let (zero, one) = (at_value(0.0), at_value(1.0));
-        for (output, low) in &zero {
-            let (Some(high), Some(port)) = (one.get(output), target.input(output)) else {
-                continue;
-            };
-            let (Some(low), Some(high)) = (low.numbers(), high.numbers()) else {
-                continue;
-            };
-            if low == high {
-                continue;
+        if input == "normal" {
+            let from = &folded.nodes[wire.from];
+            let map =
+                definition(from).filter(|d| d.node == "normalmap" || d.node == "gltf_normalmap");
+            let texture = map.and_then(|d| {
+                texture_into(
+                    &folded,
+                    wire.from,
+                    if d.node == "normalmap" { "in" } else { "file" },
+                )
+            });
+            match texture {
+                Some(texture) => {
+                    let node = made.texture(&folded, &mut out, &texture, (&[-1.0; 3], &[2.0; 3]));
+                    out.wire(node, "rgb", at, "normal");
+                }
+                None => said.push(
+                    "its normal reads no normal map USD Preview Surface holds; left out".into(),
+                ),
             }
-            if made.driven.contains(output) {
+            continue;
+        }
+        let Some((texture, chain)) = carried(&folded, wire.from, &wire.output) else {
+            said.push(format!(
+                "{input}'s network has no USD Preview Surface form; its default stands"
+            ));
+            continue;
+        };
+        let width = if texture.channel.is_some() { 1 } else { 3 };
+        let (Some(low), Some(high)) = (evaluate(&chain, width, 0.0), evaluate(&chain, width, 1.0))
+        else {
+            said.push(format!(
+                "{input}'s texture can't be carried over; its default stands"
+            ));
+            continue;
+        };
+        let channel = match (port.ty.width(), texture.channel, low.len()) {
+            (3, None, 3) => "rgb",
+            (1, Some(c), 1) => ["r", "g", "b", "a"][c],
+            _ => {
                 said.push(format!(
-                    "{output} reads several textures; the first carries over"
+                    "{input}'s texture doesn't fit it; its default stands"
                 ));
                 continue;
             }
-            let channel = match (port.ty.width(), texture.channel) {
-                (3, None) => "rgb",
-                (1, Some(c)) => ["r", "g", "b", "a"][c],
-                (1, None) => "r",
-                _ => {
-                    said.push(format!(
-                        "{input}'s texture doesn't fit {output}; its value stands"
-                    ));
-                    continue;
-                }
-            };
-            let scale: Vec<f64> = high.iter().zip(low).map(|(h, l)| h - l).collect();
-            let node = made.texture(seed, &mut out, texture, (low, &scale));
-            out.wire(node, channel, at, output);
-            out.nodes[at].parameters.remove(output);
-            made.driven.push(output.clone());
-        }
+        };
+        let scale: Vec<f64> = high.iter().zip(&low).map(|(h, l)| h - l).collect();
+        let node = made.texture(&folded, &mut out, &texture, (&low, &scale));
+        out.wire(node, channel, at, input);
+        out.nodes[at].parameters.remove(input);
     }
-    if let Some(texture) = normal {
-        let node = made.texture(seed, &mut out, &texture, (&[-1.0; 3], &[2.0; 3]));
-        out.wire(node, "rgb", at, "normal");
-    }
-    if texture_transforms_approximated(&textures) {
+    if textures_approximated(&made) {
         said.push("glTF texture transforms are approximated".into());
     }
     Some(out)
+}
+
+/// A node of the arithmetic between a texture and a surface's input: the
+/// node, the input the texture's value reaches it by, and the output it
+/// goes on by.
+struct Step<'s> {
+    node: &'s NewNode,
+    input: &'s str,
+    output: &'s str,
+}
+
+/// The texture output `output` of node `from` is, through the arithmetic
+/// nodes between: the texture, and those nodes from it outward.
+fn carried<'s>(
+    seed: &'s NetworkSeed,
+    from: usize,
+    output: &'s str,
+) -> Option<(Texture, Vec<Step<'s>>)> {
+    let mut chain = Vec::new();
+    let (mut at, mut out) = (from, output);
+    loop {
+        if let Some(texture) = texture(seed, at, out) {
+            chain.reverse();
+            return Some((texture, chain));
+        }
+        let def = definition(&seed.nodes[at])?;
+        if !def.evaluates() || chain.len() > 16 {
+            return None;
+        }
+        // Arithmetic over one wired value, the rest values of its own.
+        let mut wires = seed.wires.iter().filter(|w| w.to == at);
+        let wire = wires.next()?;
+        if wires.next().is_some() {
+            return None;
+        }
+        chain.push(Step {
+            node: &seed.nodes[at],
+            input: &wire.input,
+            output: out,
+        });
+        (at, out) = (wire.from, &wire.output);
+    }
+}
+
+/// What `chain` makes of a texture value of `width` numbers each `k`.
+fn evaluate(chain: &[Step<'_>], width: usize, k: f64) -> Option<Vec<f64>> {
+    let mut value = M::Numbers(vec![k; width]);
+    for step in chain {
+        let def = definition(step.node)?;
+        let held = |name: &str| match name == step.input {
+            true => Some(value.clone()),
+            false => step.node.parameters.get(name).and_then(mtlx_of),
+        };
+        value = def.evaluate_output(step.output, &held)?;
+    }
+    value.numbers().map(<[f64]>::to_vec)
 }
 
 /// What wires `node`'s input `input`: the node and its output.
@@ -315,8 +338,9 @@ fn uvset(seed: &NetworkSeed, node: usize, input: &str) -> String {
     .unwrap_or_else(|| "uv".into())
 }
 
-fn texture_transforms_approximated(textures: &[(&str, Texture)]) -> bool {
-    textures.iter().any(|(_, t)| t.gltf_transform)
+/// Whether a texture carried over was placed by a glTF transform.
+fn textures_approximated(made: &Made) -> bool {
+    made.gltf_transform
 }
 
 /// The nodes made so far, each once: texture coordinates by set and
@@ -326,8 +350,8 @@ struct Made {
     images: HashMap<usize, usize>,
     readers: HashMap<String, usize>,
     placed: Vec<((String, [u64; 5]), usize)>,
-    /// The surface inputs a texture drives.
-    driven: Vec<String>,
+    /// Whether a texture was placed by a glTF transform.
+    gltf_transform: bool,
 }
 
 impl Made {
@@ -340,6 +364,7 @@ impl Made {
         texture: &Texture,
         (bias, scale): (&[f64], &[f64]),
     ) -> usize {
+        self.gltf_transform |= texture.gltf_transform;
         let image = *self
             .images
             .entry(texture.image)
@@ -438,81 +463,6 @@ fn mtlx_of(value: &Value) -> Option<M> {
         Value::Text(t) => M::Text(t.clone()),
         _ => return None,
     })
-}
-
-/// MaterialX's value as a node's of type `ty`.
-fn value_of(value: &M, ty: &Type) -> Option<Value> {
-    Some(match (ty, value) {
-        (Type::Float, v) => Value::Number(v.float()?),
-        (Type::Color3, M::Numbers(n)) if n.len() == 3 => Value::Color([n[0], n[1], n[2]]),
-        (Type::Integer, M::Integer(n)) => Value::Integer(*n),
-        (Type::Integer, v) => Value::Integer(v.float()?.round() as i64),
-        (Type::Boolean, M::Boolean(b)) => Value::Bool(*b),
-        (_, M::Numbers(n)) if n.len() == ty.width() => Value::Numbers(n.clone()),
-        _ => return None,
-    })
-}
-
-/// `values` (a model's inputs by name) through `chain`'s translation
-/// graphs: the last model's inputs by name.
-fn translate(chain: &[Arc<NodeDef>], values: &HashMap<String, M>) -> HashMap<String, M> {
-    let mut values = values.clone();
-    for step in chain {
-        let Some(graph) = library().implementation(step) else {
-            return HashMap::new();
-        };
-        let interface =
-            |name: &str| (values.get(name).cloned()).or_else(|| step.input(name)?.value.clone());
-        let mut eval = Eval {
-            graph: &graph,
-            interface: &interface,
-            memo: HashMap::new(),
-        };
-        let next: HashMap<String, M> = (graph.outputs.iter())
-            .filter_map(|(name, binding)| {
-                let target = name.strip_suffix("_out")?.to_owned();
-                Some((target, eval.binding(binding)?))
-            })
-            .collect();
-        values = next;
-    }
-    values
-}
-
-/// A graph evaluated on its interface's values, each output once.
-struct Eval<'g> {
-    graph: &'g Graph,
-    interface: &'g dyn Fn(&str) -> Option<M>,
-    memo: HashMap<(usize, String), Option<M>>,
-}
-
-impl Eval<'_> {
-    fn binding(&mut self, binding: &Binding) -> Option<M> {
-        match binding {
-            Binding::Value(v) => Some(v.clone()),
-            Binding::Interface(name) => (self.interface)(name),
-            Binding::Output { node, output } => self.output(*node, output),
-        }
-    }
-
-    fn output(&mut self, node: usize, output: &str) -> Option<M> {
-        let key = (node, output.to_owned());
-        if let Some(known) = self.memo.get(&key) {
-            return known.clone();
-        }
-        let n = &self.graph.nodes[node];
-        let mut inputs: HashMap<&str, M> = HashMap::new();
-        for (name, binding) in &n.inputs {
-            if let Some(v) = self.binding(binding) {
-                inputs.insert(name, v);
-            }
-        }
-        let value = n
-            .def
-            .evaluate_output(output, &|name| inputs.get(name).cloned());
-        self.memo.insert(key, value.clone());
-        value
-    }
 }
 
 #[cfg(test)]

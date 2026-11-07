@@ -55,6 +55,7 @@ fn anodized() -> ImportedMaterial {
         name: "Red Anodized, Polished".into(),
         inside,
         standard: Some(standard),
+        double_sided: true,
     }
 }
 
@@ -90,6 +91,7 @@ fn wood(file: &EmbeddedFile) -> ImportedMaterial {
         name: "Wood".into(),
         inside,
         standard: None,
+        double_sided: false,
     }
 }
 
@@ -134,6 +136,7 @@ fn preview() -> ImportedMaterial {
         name: "Leaf".into(),
         inside,
         standard: None,
+        double_sided: true,
     }
 }
 
@@ -175,7 +178,10 @@ fn an_engines_material_comes_back_as_itself_from_a_usdz() {
     );
     let read = read_file(&path, metres(), false);
     let back = &materials(&read).materials[0];
-    assert_eq!(back.name, "Red Anodized, Polished");
+    assert_eq!(
+        (back.name.as_str(), back.double_sided),
+        ("Red Anodized, Polished", true)
+    );
     assert_eq!(shape(&back.inside), shape(&written.inside));
     assert_eq!(
         shape(back.standard.as_ref().unwrap()),
@@ -203,6 +209,8 @@ fn a_materialx_material_and_its_packaged_texture_come_back_as_they_were() {
     let back = &materials(&read).materials[0];
     assert_eq!(shape(&back.inside), shape(&written.inside));
     assert!(back.standard.is_none());
+    // Single-sided: the meshes showing it say so.
+    assert!(!back.double_sided);
 }
 
 #[test]

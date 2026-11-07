@@ -427,7 +427,7 @@ impl Network<'_> {
                 .push(format!("{name}: a texture reading a render is left out"));
             return Ok(Port::new(input, "asset", None));
         };
-        let asset = self.assets.file(source.file());
+        let asset = self.assets.file(source.file())?;
         let mut port = Port::new(input, "asset", Some(Usd::Asset(asset)));
         port.uniform = uniform;
         port.color_space = match source.color() {
