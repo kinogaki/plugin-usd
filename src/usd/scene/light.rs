@@ -298,6 +298,23 @@ fn color(value: Option<Value>) -> Option<[f64; 3]> {
     }
 }
 
+/// Whether LightAPI's light or shadow links narrow what the light at `path`
+/// lights or shadows, which Studio doesn't hold yet: an exclude, the root
+/// left out (`includeRoot`, on by default), or a membership expression.
+pub(super) fn links_narrowed(layer: &LayerData, path: &Path, time: Time) -> bool {
+    ["lightLink", "shadowLink"].iter().any(|link| {
+        let name = |part: &str| format!("collection:{link}:{part}");
+        let excludes = layer.get(
+            &path.property(name("excludes").as_str()),
+            field::TARGET_PATHS,
+        );
+        let excluded = matches!(excludes, Some(Value::PathListOp(l)) if !l.applied().is_empty());
+        let root = value_at(layer, path, &name("includeRoot"), time).and_then(|v| v.as_bool());
+        let expression = value_at(layer, path, &name("membershipExpression"), time);
+        excluded || root == Some(false) || expression.is_some()
+    })
+}
+
 /// Read the light of `kind` at `source` (a prim of type `type_name`); its
 /// files as authored.
 pub(super) fn read(

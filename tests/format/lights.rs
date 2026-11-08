@@ -237,6 +237,18 @@ def LightFilter "Barn"
 def PluginLight "Custom"
 {
 }
+def SphereLight "Linked"
+{
+    rel collection:lightLink:excludes = </Barn>
+}
+def SphereLight "Unshadowing"
+{
+    uniform bool collection:shadowLink:includeRoot = 0
+}
+def SphereLight "Everything"
+{
+    rel collection:lightLink:includes = </Barn>
+}
 "#,
     ));
     let said: Vec<&str> = read.warnings.iter().map(|w| w.message.as_str()).collect();
@@ -246,9 +258,16 @@ def PluginLight "Custom"
         "/Filtered: its light filters are a renderer's own; left out",
         "/Barn: LightFilter is a renderer's own light filter; read as a group",
         "/Custom: PluginLight names a renderer's own shader, which no engine has; read as a group",
+        "/Linked: its light and shadow links are left out; it lights and shadows everything",
+        "/Unshadowing: its light and shadow links are left out; it lights and shadows everything",
     ] {
         assert!(said.contains(&line), "{line} in {said:?}");
     }
+    // Includes beside the root (on by default) narrow nothing.
+    assert!(
+        !said.iter().any(|w| w.starts_with("/Everything")),
+        "{said:?}"
+    );
     // The sun lights as a sun, the filtered rect as a rect.
     assert!(light(&read, "Sun").shaping.is_none());
     assert!(matches!(

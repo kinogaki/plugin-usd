@@ -355,6 +355,11 @@ impl Walker<'_> {
                             "{path}: its light filters are a renderer's own; left out"
                         ));
                     }
+                    if light::links_narrowed(layer, path, time) {
+                        self.warn(format!(
+                            "{path}: its light and shadow links are left out; it lights and shadows everything"
+                        ));
+                    }
                     Ok(NodeKind::Light(Box::new(light)))
                 }
                 (None, Some(shape)) => Ok(NodeKind::Shape(Box::new(shape))),
