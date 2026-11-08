@@ -6,7 +6,9 @@
 //! embedded, as ranges of the package. Kinogaki's definitions (a glTF
 //! texture with its whole sampler) travel as the MaterialX ones they
 //! inherit and come back as themselves; a material keeps its sides
-//! whatever shows it, and its lengths move into the project's units.
+//! whatever shows it, and its lengths move into the project's units. An
+//! inline MaterialX image of a float or vector reads its file as data,
+//! whatever it says, as MaterialX converts colors alone.
 //! Apple's `usdchecker --arkit` (a local oracle) passes a usdz of MaterialX,
 //! glTF and USD Preview Surface materials.
 use crate::support::{
@@ -283,6 +285,60 @@ fn other_applications_see_the_textured_base_color_in_the_preview() {
 }
 
 #[test]
+fn an_inline_materialx_image_of_no_color_reads_its_file_as_data() {
+    let dir = Scratch::new("data-images");
+    let path = dir.join("look.usda");
+    for file in ["rough.jpg", "normal.jpg", "color.jpg"] {
+        std::fs::write(dir.join(file), [1, 2, 3]).unwrap();
+    }
+    let text = r#"#usda 1.0
+def Material "Look"
+{
+    token outputs:mtlx:surface.connect = </Look/Surface.outputs:out>
+    def Shader "Surface"
+    {
+        uniform token info:id = "ND_standard_surface_surfaceshader"
+        color3f inputs:base_color.connect = </Look/Color.outputs:out>
+        float inputs:specular_roughness.connect = </Look/Rough.outputs:out>
+        float3 inputs:coat_normal.connect = </Look/Normal.outputs:out>
+        token outputs:out
+    }
+    def Shader "Rough"
+    {
+        uniform token info:id = "ND_image_float"
+        asset inputs:file = @rough.jpg@
+        float outputs:out
+    }
+    def Shader "Normal"
+    {
+        uniform token info:id = "ND_image_vector3"
+        asset inputs:file = @normal.jpg@ (colorSpace = "srgb_texture")
+        float3 outputs:out
+    }
+    def Shader "Color"
+    {
+        uniform token info:id = "ND_image_color3"
+        asset inputs:file = @color.jpg@
+        color3f outputs:out
+    }
+}
+"#;
+    std::fs::write(&path, text).unwrap();
+    let read = read_file(&path, metres(), false);
+    let inside = &materials(&read).materials[0].inside;
+    let color_of = |file: &str| {
+        let sources = (inside.nodes.iter())
+            .filter(|n| n.node_type == IMAGE_NODE)
+            .filter_map(|n| image_source(&n.parameters).unwrap());
+        let source = sources.into_iter().find(|s| s.name().ends_with(file));
+        source.map(|s| s.color().clone())
+    };
+    assert_eq!(color_of("rough.jpg"), Some(ImageColor::Data));
+    assert_eq!(color_of("normal.jpg"), Some(ImageColor::Data));
+    assert_eq!(color_of("color.jpg"), Some(ImageColor::Auto));
+}
+
+#[test]
 fn a_usdz_texture_reads_back_embedded_as_a_range_of_the_package() {
     let dir = Scratch::new("packaged");
     let path = dir.join("table.usdz");
@@ -319,7 +375,8 @@ fn a_usdz_texture_reads_back_embedded_as_a_range_of_the_package() {
 /// A glTF material as glTF's reader makes one: glTF PBR whose base color is
 /// a texture of Kinogaki's (glTF's whole sampler: a minification filter, an
 /// undefined magnification one), and an occlusion texture holding no
-/// filter of its own; a volume's lengths.
+/// filter of its own, the one file read as color and as data; a volume's
+/// lengths.
 fn gltf(file: &EmbeddedFile) -> ImportedMaterial {
     let mut inside = NetworkSeed::default();
     let surface = inside.node(
@@ -352,10 +409,11 @@ fn gltf(file: &EmbeddedFile) -> ImportedMaterial {
             .unwrap()
             .named("Spare"),
     );
-    let source = ImageSource::new(ImageFile::Embedded(file.clone()), ImageColor::Auto);
-    let image = inside.node(image_node::reading(&source).named("box"));
-    inside.wire(image, image_node::IMAGE, base, "file");
-    inside.wire(image, image_node::IMAGE, occlusion, "file");
+    for (color, texture) in [(ImageColor::Auto, base), (ImageColor::Data, occlusion)] {
+        let source = ImageSource::new(ImageFile::Embedded(file.clone()), color);
+        let image = inside.node(image_node::reading(&source).named("box"));
+        inside.wire(image, image_node::IMAGE, texture, "file");
+    }
     inside.wire(base, "outcolor", surface, "base_color");
     inside.wire(occlusion, "out", surface, "occlusion");
     ImportedMaterial {

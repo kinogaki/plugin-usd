@@ -130,9 +130,9 @@ pub fn names_of(read: &Imported) -> Vec<&str> {
     read.items.iter().map(|i| i.name.as_str()).collect()
 }
 
-/// What a network holds, its nodes by name: each one's type, its values
-/// (an Image node's by what it reads), and its wires by the names they
-/// join; the shown node's name.
+/// What a network holds, its nodes by name (a name met again numbered:
+/// `box 2`): each one's type, its values (an Image node's by what it reads),
+/// and its wires by the names they join; the shown node's name.
 pub type Shape = (
     BTreeMap<String, (String, Vec<(String, String)>)>,
     BTreeSet<(String, String, String, String)>,
@@ -140,7 +140,11 @@ pub type Shape = (
 );
 
 pub fn shape(seed: &NetworkSeed) -> Shape {
-    let name = |at: usize| seed.nodes[at].name.clone().unwrap_or_default();
+    let given = |at: usize| seed.nodes[at].name.clone().unwrap_or_default();
+    let name = |at: usize| match (0..at).filter(|&k| given(k) == given(at)).count() {
+        0 => given(at),
+        n => format!("{} {}", given(at), n + 1),
+    };
     let nodes = (seed.nodes.iter().enumerate())
         .map(|(at, n)| {
             let values: Vec<(String, String)> = match n.node_type == IMAGE_NODE {

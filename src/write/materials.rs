@@ -28,6 +28,7 @@ use kinogaki_render_api::material::mtlx::SIGNATURE;
 use kinogaki_studio_api::color::{ColorService, LIN_REC709, SRGB_TEXTURE};
 use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::geometry::image::ImageColor;
+use kinogaki_studio_api::geometry::names::CD;
 use kinogaki_studio_api::image_files::{IMAGE_NODE, image_source};
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
 use kinogaki_studio_api::standard::ImportedMaterial;
@@ -215,11 +216,16 @@ impl Network<'_> {
                 .flatten();
             let own = def.map(own_inputs).unwrap_or_default();
             let unheld = own.iter().filter(|(i, _)| !node.parameters.contains_key(i));
+            // A reader of the color attribute's fallback is a color.
+            let named = node.parameters.get("varname").and_then(Value::text);
+            let reads_color =
+                def.is_some_and(|d| d.node == "UsdPrimvarReader") && named == Some(CD);
             for (input, value) in node.parameters.iter().chain(unheld.map(|(i, v)| (i, v))) {
                 if input == SIGNATURE {
                     continue;
                 }
-                if let Some(port) = self.value(def, preview, input, value, context) {
+                let colored = reads_color && input == "fallback";
+                if let Some(port) = self.value((def, preview, colored), input, value, context) {
                     self.material.nodes[shader].inputs.push(port);
                 }
             }
@@ -372,12 +378,13 @@ impl Network<'_> {
 
     /// Input `input` of a node of definition `def` (none: an engine's)
     /// holding `value`, as a USD input: MaterialX's types, an engine's by
-    /// the value's kind; colors in the working space, USD Preview Surface's
-    /// in its own linear Rec.709. None, said, for a value USD can't hold.
+    /// the value's kind; colors (what USD types a color, and numbers
+    /// `colored` says are one: a color reader's fallback) in the working
+    /// space, USD Preview Surface's in its own linear Rec.709. None, said,
+    /// for a value USD can't hold.
     fn value(
         &mut self,
-        def: Option<&Arc<NodeDef>>,
-        preview: Option<&str>,
+        (def, preview, colored): (Option<&Arc<NodeDef>>, Option<&str>, bool),
         input: &str,
         value: &Value,
         context: &str,
@@ -390,7 +397,7 @@ impl Network<'_> {
                     return None;
                 }
                 let preview = preview.map(|p| (p, input));
-                let colored = shading::is_color(&port.ty, preview);
+                let colored = colored || shading::is_color(&port.ty, preview);
                 (shading::usd_type(&port.ty, preview), colored)
             }
             None => {
@@ -437,13 +444,13 @@ impl Network<'_> {
         Some(port)
     }
 
-    /// The space a color `value` (a color3, or a color4's numbers) is
-    /// written in: the working space, said on the input; USD Preview
-    /// Surface's, linear Rec.709, converted to.
+    /// The space a color `value` (a color3, or a color4's or color reader's
+    /// numbers) is written in: the working space, said on the input; USD
+    /// Preview Surface's, linear Rec.709, converted to.
     fn color_space(&mut self, value: &mut Value, context: &str) -> Option<String> {
         let rgb: &mut [f64] = match value {
             Value::Color(c) => c,
-            Value::Numbers(n) if n.len() == 4 => &mut n[..3],
+            Value::Numbers(n) if n.len() >= 3 => &mut n[..3],
             _ => return None,
         };
         if context != UNIVERSAL {

@@ -22,10 +22,12 @@ use crate::shading::{
 use crate::usd::sdf::{Token, Value as Usd};
 use crate::usd::shade::{Material, Port, ShadeKind, Source};
 use kinogaki_mtlx::NodeDef;
+use kinogaki_render_api::material::mtlx;
 use kinogaki_studio_api::color::{ColorService, LIN_REC709, SRGB_TEXTURE};
 use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::format::materialx;
 use kinogaki_studio_api::geometry::image::{ImageColor, ImageSource};
+use kinogaki_studio_api::geometry::names::CD;
 use kinogaki_studio_api::image_files::image_node;
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
 use kinogaki_studio_api::standard::ImportedMaterial;
@@ -316,7 +318,7 @@ impl<'m> Reader<'m, '_, '_> {
             let Some(file) = self.files.file(path) else {
                 return;
             };
-            let source = ImageSource::new(file, self.texture_color(n, holder));
+            let source = ImageSource::new(file, self.texture_color(n, kind, holder));
             let image = match images.iter().find(|(s, _)| *s == source) {
                 Some((_, image)) => *image,
                 None => {
@@ -330,7 +332,8 @@ impl<'m> Reader<'m, '_, '_> {
             seed.wire(image, image_node::IMAGE, at, input);
             return;
         }
-        // What USD types a color (an engine's values by their kind) is one.
+        // What USD types a color (an engine's values by their kind) is one,
+        // and the fallback of a reader of the color attribute (`displayColor`).
         let (read, colored) = match kind {
             Kind::Mtlx(def, preview) => {
                 if preview.as_deref() == Some("UsdUVTexture") && input == "sourceColorSpace" {
@@ -340,7 +343,10 @@ impl<'m> Reader<'m, '_, '_> {
                     self.say(format!("{} has no input {input}; left out", def.node));
                     return;
                 };
-                let colored = shading::is_color(&port.ty, preview.as_deref().map(|p| (p, input)));
+                let colored = shading::is_color(&port.ty, preview.as_deref().map(|p| (p, input)))
+                    || (def.node == "UsdPrimvarReader"
+                        && input == "fallback"
+                        && self.reads_color(n));
                 let read = match (preview.as_deref(), input) {
                     (Some("UsdPreviewSurface"), "opacityMode") => (shading::text(value))
                         .and_then(|t| OPACITY_MODES.iter().position(|m| *m == t))
@@ -368,26 +374,40 @@ impl<'m> Reader<'m, '_, '_> {
         seed.nodes[at].parameters.insert(input.to_owned(), read);
     }
 
+    /// Whether shader `n`, a primvar reader, reads the color attribute.
+    fn reads_color(&self, n: usize) -> bool {
+        let varname = self.material.nodes[n].input("varname");
+        let name = varname
+            .and_then(|p| p.value.as_ref())
+            .and_then(shading::text);
+        name.is_some_and(|t| names::attribute(t) == CD)
+    }
+
     /// How a texture's colors read: USD UV Texture's `sourceColorSpace`,
-    /// else the file input's `colorSpace`, else as the file says.
-    fn texture_color(&self, n: usize, file: &Port) -> ImageColor {
+    /// else the file input's `colorSpace`, else as the file says; data on a
+    /// MaterialX node giving no color (`kind`).
+    fn texture_color(&self, n: usize, kind: &Kind, file: &Port) -> ImageColor {
         let source = (self.material.nodes[n].input("sourceColorSpace"))
             .and_then(|p| p.value.as_ref())
             .and_then(shading::text);
+        let color = match kind {
+            Kind::Mtlx(def, _) => mtlx::def(&def.name).is_none_or(|d| d.gives_color()),
+            Kind::Engine => true,
+        };
         match source {
             Some("raw") => ImageColor::Data,
             Some("sRGB") => ImageColor::space(SRGB_TEXTURE).expect("a space's name"),
-            _ => materialx::image_color(file.color_space.as_deref()),
+            _ => materialx::image_color(file.color_space.as_deref(), color),
         }
     }
 
-    /// A color `value` (a color3, or a color4's numbers) authored in
-    /// `space` (linear Rec.709 when the file doesn't say) in the working
-    /// space.
+    /// A color `value` (a color3, or a color4's or color reader's numbers)
+    /// authored in `space` (linear Rec.709 when the file doesn't say) in the
+    /// working space.
     fn in_working(&mut self, value: &mut Value, space: Option<&Token>) {
         let rgb: &mut [f64] = match value {
             Value::Color(c) => c,
-            Value::Numbers(n) if n.len() == 4 => &mut n[..3],
+            Value::Numbers(n) if n.len() >= 3 => &mut n[..3],
             _ => return,
         };
         let from = space.map_or(LIN_REC709, Token::as_str);
