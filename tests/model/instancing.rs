@@ -63,7 +63,7 @@ fn instanceable_prims_share_one_prototype() {
     assert_eq!((one.material, two.material), (None, Some(0)));
     let prototype = &scene.prototypes[0];
     assert_eq!(prototype.nodes.len(), 1);
-    assert_eq!(prototype.path(0).text(), "/Flattened_Prototype_1/Part");
+    assert_eq!(prototype.path(0).text(), "/Shelf/One/Part");
     assert!(matches!(prototype.nodes[0].kind, NodeKind::Mesh(_)));
 }
 
@@ -218,4 +218,62 @@ def PointInstancer "Loop"
         scene.warnings
     );
     assert!(kinogaki_usd::usd::scene::author(&scene).is_ok());
+}
+
+/// Two instanceable prims showing the root prim `name`, which holds two
+/// quads, as an instanced stage OpenUSD flattened holds its prototypes.
+fn flattened_instances(name: &str) -> String {
+    format!(
+        r#"#usda 1.0
+over "{name}"
+{{
+    def Scope "Geom"
+    {{
+        def Mesh "Render"
+        {{
+            int[] faceVertexCounts = [4, 4]
+            int[] faceVertexIndices = [0, 1, 2, 3, 1, 4, 5, 2]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (2, 0, 0), (2, 1, 0)]
+        }}
+    }}
+}}
+
+def Xform "World"
+{{
+    def Xform "Left" (
+        instanceable = true
+        add references = </{name}>
+    )
+    {{
+    }}
+
+    def Xform "Right" (
+        instanceable = true
+        add references = </{name}>
+    )
+    {{
+    }}
+}}
+"#
+    )
+}
+
+#[test]
+fn a_files_own_flattened_prototypes_are_its_prims_and_read_once() {
+    // A prototype the reader made is told by what the flattening made, so
+    // the file's own `Flattened_Prototype_1` is a prim like any other.
+    for name in ["Flattened_Prototype_1", "Flattened_Prototype_7", "Proto"] {
+        let scene = scene_of(flattened_instances(name).as_bytes());
+        assert_eq!(paths(&scene), ["/World", "/World/Left", "/World/Right"]);
+        assert_eq!(scene.prototypes.len(), 1, "{name}");
+        let prototype = &scene.prototypes[0];
+        // Named by its source instance, a prim of the stage.
+        assert_eq!(prototype.path(1).text(), "/World/Left/Geom/Render");
+        let NodeKind::Mesh(mesh) = &prototype.nodes[1].kind else {
+            panic!("a mesh")
+        };
+        assert_eq!(mesh.face_vertex_counts.len(), 2, "{name}: two quads once");
+        let instances = (scene.nodes.iter()).filter(|n| n.instance == Some(0));
+        assert_eq!(instances.count(), 2);
+    }
 }

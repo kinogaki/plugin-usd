@@ -38,8 +38,7 @@ mod strength;
 mod tasks;
 mod variants;
 
-pub use composer::ForeignArc;
-pub use flatten::FlattenOptions;
+pub use flatten::{FlattenOptions, Flattened, Instances};
 pub use graph::{ArcType, Node, PrimIndex};
 pub use map::MapFunction;
 pub use stage::{Stage, StageOptions};

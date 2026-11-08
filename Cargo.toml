@@ -25,7 +25,8 @@ todo = "deny"
 kinogaki-studio-api = { path = "../../sdk/crates/api" }
 # MaterialX node definitions and the standard light and camera.
 kinogaki-render-api = { path = "../../sdk/crates/render-api" }
-# MaterialX's library: definitions and translation graphs.
+# MaterialX's library (definitions and translation graphs) and documents,
+# which a layer may reference.
 kinogaki-mtlx = { path = "../../sdk/crates/mtlx" }
 
 [dev-dependencies]

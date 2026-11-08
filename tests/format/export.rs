@@ -2,7 +2,9 @@
 //! attributes, bindings and groups where they were, in any project's
 //! units; curves; instances as copies, each with its own material; lights
 //! and cameras; a dome naming an image of the file's.
-use crate::support::{Scratch, item, materials, metres, read_file, square, write_file};
+use crate::support::{
+    Doubling, Scratch, item, materials, metres, read_file, read_in, square, write_file, write_in,
+};
 use kinogaki_render_api::standard::{Light, LightShape};
 use kinogaki_render_api::{Camera, Projection};
 use kinogaki_studio_api::FileItem;
@@ -387,4 +389,25 @@ fn a_domes_file_held_file_and_node_go_to_a_layer() {
         .get(item(&read, "Node").1.unwrap())
         .unwrap();
     assert!(matches!(node.shape, LightShape::Dome { image: None, .. }));
+}
+
+#[test]
+fn colors_are_written_in_linear_rec709_as_other_applications_read_them() {
+    let dir = Scratch::new("display-color");
+    let path = dir.join("square.usda");
+    let red = plain("/Looks/Red", "Red");
+    let square = FileItem::top("Square", standard::geometry().wrap(square("/Looks/Red")));
+    // Where the working space holds colors at twice their numbers.
+    write_in(&path, &[looks(vec![red]), square], &Doubling);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let written = "color3f[] primvars:displayColor = [(0.25, 0.125, 0.375),";
+    assert!(text.contains(written), "{text}");
+    assert!(!text.contains("colorSpace"), "{text}");
+    let read = read_in(&path, &Doubling);
+    let back = standard::geometry().get(item(&read, "Square").1.unwrap());
+    let cd = back
+        .unwrap()
+        .attributes()
+        .tuples::<[f32; 3]>(Domain::Point, names::CD);
+    assert_eq!(cd.unwrap()[0], [0.5, 0.25, 0.75]);
 }

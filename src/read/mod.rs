@@ -15,11 +15,13 @@
 mod files;
 mod geometry;
 mod materials;
+mod primvars;
 
 use crate::lights;
 use crate::space;
 use crate::usd::package::Bytes;
 use crate::usd::scene::{Instancer, Node, NodeKind, ReadOptions, Scene};
+use crate::usd::sdf::Path;
 use crate::usd::{ErrorKind, Stage, StageOptions};
 use files::{Files, Held};
 use geometry::Shaping;
@@ -206,7 +208,7 @@ impl Walk<'_, '_> {
             }
             false => (local, world_above.compose(&local)),
         };
-        let data = self.data(node, 0)?;
+        let data = self.data(node, &self.scene.path(at.len()), 0)?;
         let instance = match node.instance {
             Some(p) => self.instance(p, node.material, 0)?,
             None => None,
@@ -232,23 +234,24 @@ impl Walk<'_, '_> {
         Ok(At { item, world })
     }
 
-    /// What `node` holds as a value; none for a group. `depth`: how deep
-    /// in prototypes it is.
-    fn data(&mut self, node: &Node, depth: usize) -> Result<Option<Data>, Error> {
+    /// What `node`, the prim at `path`, holds as a value; none for a
+    /// group. `depth`: how deep in prototypes it is.
+    fn data(&mut self, node: &Node, path: &Path, depth: usize) -> Result<Option<Data>, Error> {
         let cx = &self.shaping;
         Ok(Some(match &node.kind {
             NodeKind::Group => return Ok(None),
             NodeKind::Mesh(mesh) => {
-                let polygons = geometry::mesh(mesh, node.material, cx, self.warnings)?;
+                let polygons = geometry::mesh(mesh, node.material, cx, path, self.warnings)?;
                 standard::geometry().wrap(polygons)
             }
             NodeKind::Shape(shape) => {
-                let polygons = geometry::mesh(&shape.mesh(), node.material, cx, self.warnings)?;
+                let mesh = shape.mesh();
+                let polygons = geometry::mesh(&mesh, node.material, cx, path, self.warnings)?;
                 standard::geometry().wrap(polygons)
             }
-            NodeKind::Curves(curves) => match geometry::curves(curves, cx, self.warnings) {
+            NodeKind::Curves(curves) => match geometry::curves(curves, cx, path, self.warnings) {
                 Ok(curves) => standard::geometry().wrap(curves),
-                Err(e) => return self.left_out(node, &e),
+                Err(e) => return self.left_out(path, &e),
             },
             NodeKind::Points(points) => standard::geometry().wrap(geometry::points(points, cx)?),
             NodeKind::Camera(camera) => {
@@ -256,7 +259,7 @@ impl Walk<'_, '_> {
                 let lens = lights::camera(camera, self.scene.meters_per_unit, space.scale());
                 match standard::camera().wrap(lens) {
                     Ok(lens) => lens,
-                    Err(e) => return self.left_out(node, &e),
+                    Err(e) => return self.left_out(path, &e),
                 }
             }
             NodeKind::Light(light) => {
@@ -264,10 +267,13 @@ impl Walk<'_, '_> {
                 let image = (light.texture.as_ref())
                     .and_then(|path| self.files.file(path))
                     .map(|file| ImageRef::File(ImageSource::new(file, Default::default())));
+                if let Some(lost) = lights::unshaped(light) {
+                    self.warnings.push(format!("{path}: {lost}"));
+                }
                 let light = lights::light(light, scale, image, self.reading.colors);
                 match light.and_then(|l| standard::light().wrap(l)) {
                     Ok(light) => light,
-                    Err(e) => return self.left_out(node, &e),
+                    Err(e) => return self.left_out(path, &e),
                 }
             }
             NodeKind::Instancer(instancer) => {
@@ -279,11 +285,10 @@ impl Walk<'_, '_> {
         }))
     }
 
-    /// Says `node` is left out, and why.
-    fn left_out(&mut self, node: &Node, why: &Error) -> Result<Option<Data>, Error> {
-        let name = &node.name;
+    /// Says the prim at `path` is left out, and why.
+    fn left_out(&mut self, path: &Path, why: &Error) -> Result<Option<Data>, Error> {
         self.warnings
-            .push(format!("{name}: {}; left out", why.message()));
+            .push(format!("{path}: {}; left out", why.message()));
         Ok(None)
     }
 
@@ -417,7 +422,7 @@ impl Walk<'_, '_> {
         let mut worlds: Vec<Xform> = Vec::with_capacity(prototype.nodes.len());
         let mut geometry: Vec<(Data, Xform)> = Vec::new();
         let mut parts = Vec::new();
-        for node in &prototype.nodes {
+        for (k, node) in prototype.nodes.iter().enumerate() {
             self.reading.check()?;
             let local = space.placement(&space::xform(&node.transform));
             let world = match (node.parent, node.resets_transform) {
@@ -425,15 +430,15 @@ impl Walk<'_, '_> {
                 _ => local,
             };
             worlds.push(world);
+            let path = prototype.path(k);
             if matches!(node.kind, NodeKind::Light(_) | NodeKind::Camera(_)) {
-                let name = &node.name;
                 self.warnings.push(format!(
-                    "{name}: a light or camera in a prototype; left out"
+                    "{path}: a light or camera in a prototype; left out"
                 ));
                 continue;
             }
             // A point instancer's instances, placed where it is.
-            match self.data(node, depth)? {
+            match self.data(node, &path, depth)? {
                 Some(data) if standard::instances().get(&data).is_some() => {
                     let at = vec![world].into();
                     parts.extend(self.instances(vec![data], at, None, Attributes::new())?);

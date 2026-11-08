@@ -1,6 +1,7 @@
 //! The standard Geometry as USD prims: its polygons a Mesh with its
 //! attributes as primvars (`uv` as `st`, `N` as `normals`, `Cd` as
-//! `displayColor`, on the interpolation their domain is), its faces'
+//! `displayColor`, on the interpolation their domain is; colors in linear
+//! Rec.709, USD's own, where other applications read them), its faces'
 //! materials as bindings (GeomSubsets where they differ) and its primitive
 //! groups as GeomSubsets; its curves BasisCurves or NurbsCurves, one prim
 //! for each kind of curve; points alone, Points.
@@ -10,6 +11,7 @@ use crate::usd::scene::{
     Subdivision, Subset, SubsetElement,
 };
 use crate::usd::sdf::{Array, Token, Value as Usd};
+use kinogaki_studio_api::color::{ColorService, LIN_REC709};
 use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::geometry::{
     Attribute, Basis, Domain, Geometry, Kind, Meaning, Values, names as standard,
@@ -24,11 +26,11 @@ pub(super) struct Prims {
 }
 
 /// What writing geometry needs: each material's index in the scene by its
-/// key, whether each is double-sided, and the working space's name.
+/// key, whether each is double-sided, and the project's colors.
 pub(super) struct Shaping<'a> {
     pub materials: &'a HashMap<Arc<str>, usize>,
     pub double_sided: &'a [bool],
-    pub working: &'a str,
+    pub colors: &'a dyn ColorService,
 }
 
 /// `value` as USD prims.
@@ -103,7 +105,7 @@ fn mesh(
         if matches!(name, standard::MATERIAL | standard::NAME | standard::PART) {
             continue;
         }
-        match primvar(name, attribute, interpolation, picked, cx.working) {
+        match primvar(name, attribute, interpolation, picked, cx, warnings) {
             Some(primvar) => primvars.push(primvar),
             None => warnings.push(format!("attribute {name} has no USD primvar; left out")),
         }
@@ -215,18 +217,42 @@ fn materials(
 
 /// `attribute` (named `name`) as a primvar of `interpolation`, its values
 /// at the elements `picked` (all, in order, when none); none for one USD
-/// has no type for.
+/// has no type for. Colors are converted from the working space into
+/// linear Rec.709, which other applications read a primvar as whatever its
+/// `colorSpace` says; where they can't be, they stay in the working space,
+/// said there.
 fn primvar(
     name: &str,
     attribute: &Attribute,
     interpolation: Interpolation,
     picked: Option<&[usize]>,
-    working: &str,
+    cx: &Shaping<'_>,
+    warnings: &mut Vec<String>,
 ) -> Option<Primvar> {
     let ty = attribute.ty();
     let width = usize::from(ty.width);
     let meaning = ty.meaning;
+    let mut color_space = None;
     let (type_name, values, element_size) = match attribute.values() {
+        Values::F32(v) if meaning == Meaning::Color && matches!(width, 3 | 4) => {
+            let colors = cx.colors;
+            let mut flat = v.as_slice().to_vec();
+            let mut rgb: Vec<[f32; 3]> = flat
+                .chunks_exact(width)
+                .map(|c| [c[0], c[1], c[2]])
+                .collect();
+            match colors.convert_f32(colors.working(), LIN_REC709, &mut rgb) {
+                Ok(()) => (flat.chunks_exact_mut(width).zip(&rgb))
+                    .for_each(|(c, l)| c[..3].copy_from_slice(l)),
+                Err(e) => {
+                    warnings.push(format!(
+                        "attribute {name}: colors kept in the working space: {e}"
+                    ));
+                    color_space = Some(Token::new(colors.working()));
+                }
+            }
+            reals(&flat, width, meaning, picked)
+        }
         Values::F32(v) => reals(v.as_slice(), width, meaning, picked),
         Values::F64(v) => {
             let v: Vec<f32> = v.iter().map(|&x| x as f32).collect();
@@ -253,7 +279,7 @@ fn primvar(
         element_size,
         values: Usd::Array(values),
         indices: None,
-        color_space: (meaning == Meaning::Color).then(|| Token::new(working)),
+        color_space,
     })
 }
 

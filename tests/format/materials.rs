@@ -10,7 +10,8 @@
 //! Apple's `usdchecker --arkit` (a local oracle) passes a usdz of MaterialX,
 //! glTF and USD Preview Surface materials.
 use crate::support::{
-    Scratch, materials, metres, read_file, read_with, shape, square, stage, write_file,
+    Doubling, Scratch, materials, metres, read_file, read_in, read_with, shape, square, stage,
+    write_file, write_in,
 };
 use kinogaki_studio_api::color::SRGB_TEXTURE;
 use kinogaki_studio_api::geometry::EmbeddedFile;
@@ -494,6 +495,94 @@ fn a_materials_lengths_move_into_the_projects_units() {
         shape(&back.inside).0["Surface"],
         shape(&gltf(&file).inside).0["Surface"]
     );
+}
+
+/// A raw normal map decoded by its texture's scale and bias, as McUsd's
+/// are, beside a surface color.
+const NORMAL_MAP: &str = r#"#usda 1.0
+(
+    metersPerUnit = 1
+)
+def Mesh "Block" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+)
+{
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    rel material:binding = </Looks/Block>
+}
+
+def Scope "Looks"
+{
+    def Material "Block"
+    {
+        token outputs:surface.connect = </Looks/Block/PreviewSurface.outputs:surface>
+
+        def Shader "PreviewSurface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.25, 0.25, 0.25)
+            normal3f inputs:normal.connect = </Looks/Block/normal_texture.outputs:rgb>
+            token outputs:surface
+        }
+
+        def Shader "normal_texture"
+        {
+            uniform token info:id = "UsdUVTexture"
+            float4 inputs:bias = (-1, 1, -1, -1)
+            float4 inputs:fallback = (0.5, 0.5, 1, 1)
+            asset inputs:file = @normal.png@
+            float4 inputs:scale = (2, -2, 2, 2)
+            token inputs:sourceColorSpace = "raw"
+            float3 outputs:rgb
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_textures_scale_bias_and_fallback_are_numbers_read_and_written() {
+    let dir = Scratch::new("scale-bias");
+    let path = dir.join("block.usda");
+    std::fs::write(&path, NORMAL_MAP).unwrap();
+    std::fs::write(dir.join("normal.png"), b"a picture").unwrap();
+    // Read where colors convert: the surface's color does, the texture's
+    // numbers don't.
+    let read = read_in(&path, &Doubling);
+    let seed = &materials(&read).materials[0].inside;
+    let named = |name: &str| {
+        let node = seed.nodes.iter().find(|n| n.name.as_deref() == Some(name));
+        &node.unwrap().parameters
+    };
+    let texture = named("normal_texture");
+    let numbers = |n: [f64; 4]| Some(Value::Numbers(n.to_vec()));
+    assert_eq!(
+        texture.get("scale").cloned(),
+        numbers([2.0, -2.0, 2.0, 2.0])
+    );
+    assert_eq!(
+        texture.get("bias").cloned(),
+        numbers([-1.0, 1.0, -1.0, -1.0])
+    );
+    assert_eq!(
+        texture.get("fallback").cloned(),
+        numbers([0.5, 0.5, 1.0, 1.0])
+    );
+    let surface = named("PreviewSurface");
+    assert_eq!(surface.get("diffuseColor"), Some(&Value::Color([0.5; 3])));
+    // Written, each is as it was authored.
+    let again = dir.join("again.usda");
+    write_in(&again, &read.items, &Doubling);
+    let text = std::fs::read_to_string(&again).unwrap();
+    for spelled in [
+        "float4 inputs:scale = (2, -2, 2, 2)",
+        "float4 inputs:bias = (-1, 1, -1, -1)",
+        "float4 inputs:fallback = (0.5, 0.5, 1, 1)",
+        "color3f inputs:diffuseColor = (0.25, 0.25, 0.25)",
+    ] {
+        assert!(text.contains(spelled), "{spelled} in\n{text}");
+    }
 }
 
 #[test]

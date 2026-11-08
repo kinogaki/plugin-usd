@@ -56,8 +56,6 @@ pub struct Composer {
     pub(super) variant_fallbacks: Vec<(Token, Token)>,
     /// The prim whose index is being built (payload loading asks about it).
     pub(super) composing: Path,
-    /// Arcs to files of formats composition does not read.
-    pub(super) foreign: Vec<ForeignArc>,
     cache: PathMap<Arc<PrimIndex>>,
     /// Each arc's map, made once ([`Composer::arc_map`]).
     pub(super) arc_maps: HashMap<ArcKey, MapFunction>,
@@ -69,29 +67,6 @@ pub struct Composer {
 /// through, its source and target paths, its time offset (by bits), and
 /// whether every other path maps to itself.
 pub(super) type ArcKey = (usize, Path, Path, [u64; 2], bool);
-
-/// A reference or payload to a file of a format composition does not read
-/// (a MaterialX document, which OpenUSD composes through its UsdMtlx file
-/// format plugin): kept for that format's reader rather than reported.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ForeignArc {
-    /// The stage prim whose composition met the arc.
-    pub prim: Path,
-    /// The file, as an anchored identifier.
-    pub asset: String,
-    /// The prim targeted in it (empty: its default).
-    pub target: Path,
-}
-
-/// Extensions of the files composition leaves to other readers.
-const FOREIGN: [&str; 1] = [".mtlx"];
-
-/// Whether `asset` names a file composition leaves to other readers.
-pub(super) fn is_foreign(asset: &str) -> bool {
-    // A file inside a package: its own name ends the identifier.
-    let file = asset.trim_end_matches(']').to_ascii_lowercase();
-    FOREIGN.iter().any(|extension| file.ends_with(extension))
-}
 
 impl Composer {
     /// A composition of the layer stack rooted at `root` (an identifier),
@@ -133,7 +108,6 @@ impl Composer {
             loaded_matching: Vec::new(),
             variant_fallbacks: Vec::new(),
             composing: Path::absolute_root(),
-            foreign: Vec::new(),
             cache: PathMap::default(),
             arc_maps: HashMap::new(),
             nesting: 0,

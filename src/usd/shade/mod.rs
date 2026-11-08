@@ -14,9 +14,9 @@
 //!
 //! Nothing is interpreted here: values, types and connections are what the
 //! layer says, so a network reads and writes back unchanged. Asset-valued
-//! inputs (texture files) name the scene's assets. MaterialX documents a
-//! material references (`references = @look.mtlx@</MaterialX/…>`) are
-//! kept as [`MtlxDocument`]s for MaterialX's reader.
+//! inputs (texture files) name the scene's assets. A MaterialX document a
+//! material references (`references = @look.mtlx@</MaterialX/…>`) is
+//! composed as the layer UsdMtlx makes of it, its materials read as any.
 
 mod read;
 mod write;
@@ -40,8 +40,6 @@ pub struct Material {
     pub outputs: Vec<Port>,
     /// The Shader and NodeGraph prims beneath it, parents before children.
     pub nodes: Vec<ShadeNode>,
-    /// MaterialX documents it references.
-    pub mtlx: Vec<MtlxDocument>,
 }
 
 impl Material {
@@ -53,7 +51,6 @@ impl Material {
             inputs: Vec::new(),
             outputs: Vec::new(),
             nodes: Vec::new(),
-            mtlx: Vec::new(),
         }
     }
 
@@ -164,15 +161,4 @@ pub struct Source {
     pub port: Token,
     /// Whether the port is an output (else an interface input).
     pub output: bool,
-}
-
-/// A MaterialX document a material references as a layer: what OpenUSD
-/// composes through UsdMtlx, kept for MaterialX's reader.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MtlxDocument {
-    /// The document, the path of one of the scene's assets.
-    pub asset: Token,
-    /// The prim referenced in it (`/MaterialX/Materials/Steel`); empty: its
-    /// default.
-    pub target: Path,
 }

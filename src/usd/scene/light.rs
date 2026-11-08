@@ -1,16 +1,17 @@
 //! UsdLux lights as plain data: area lights (RectLight, DiskLight), the
-//! DomeLight, the DistantLight and the SphereLight (with ShapingAPI's cone,
-//! a spot), with their shared inputs (intensity, exposure, color, color
-//! temperature, normalize) and sizes, and Kinogaki's `kinogaki:emission`
-//! (a spectrum UsdLux cannot name), and a DomeLight's image file.
-//! Inputs read under their `inputs:`
-//! names and, for files written before UsdLux took that prefix, under
-//! their bare names. Other UsdLux kinds are not read (see
+//! DomeLight, the DistantLight and the SphereLight, with their shared
+//! inputs (intensity, exposure, color, color temperature, normalize) and
+//! sizes, ShapingAPI's (a cone, focus, an IES profile) on any of them,
+//! Kinogaki's `kinogaki:emission` (a spectrum UsdLux cannot name), and a
+//! DomeLight's image file. An input left unauthored holds its schema's
+//! fallback (a DistantLight's intensity is 50,000). Inputs read under their
+//! `inputs:` names and, for files written before UsdLux took that prefix,
+//! under their bare names. Other UsdLux kinds are not read (see
 //! [`LightKind::unread`]).
 
 use super::author::Author;
 use super::values::{Time, color_space, reals, value_at};
-use crate::usd::sdf::{LayerData, Path, Token, Value};
+use crate::usd::sdf::{LayerData, Path, Token, Value, field};
 
 /// Which UsdLux light a prim is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,8 +114,17 @@ pub struct Light {
     pub radius: f64,
     /// `inputs:angle` (Distant): its size across, in degrees.
     pub angle: f64,
-    /// ShapingAPI's cone, when the prim applies ShapingAPI.
+    /// ShapingAPI's cone, when the light is shaped: it applies ShapingAPI
+    /// or authors its inputs.
     pub cone: Option<Cone>,
+    /// `inputs:shaping:focus` (0: none): how much the light gathers toward
+    /// its -Z.
+    pub focus: f64,
+    /// `inputs:shaping:focusTint`: the color its light takes off its axis
+    /// as it focuses.
+    pub focus_tint: [f64; 3],
+    /// `inputs:shaping:ies:file`: its IES profile, as authored.
+    pub ies: Option<Token>,
     /// `inputs:texture:file` (Dome): its image, the path of one of the
     /// scene's assets.
     pub texture: Option<Token>,
@@ -124,11 +134,16 @@ pub struct Light {
 }
 
 impl Light {
-    /// A light of `kind` with the schema's fallback values.
+    /// A light of `kind` with its schema's fallback values: LightAPI's and
+    /// ShapingAPI's, with the ones its kind overrides (a DistantLight's
+    /// intensity of 50,000, to approximate sunlight).
     pub fn new(kind: LightKind) -> Light {
         Light {
             kind,
-            intensity: 1.0,
+            intensity: match kind {
+                LightKind::Distant => 50_000.0,
+                _ => 1.0,
+            },
             exposure: 0.0,
             color: [1.0; 3],
             color_space: None,
@@ -141,6 +156,9 @@ impl Light {
             radius: 0.5,
             angle: 0.53,
             cone: None,
+            focus: 0.0,
+            focus_tint: [0.0; 3],
+            ies: None,
             texture: None,
             texture_format: Token::new("automatic"),
         }
@@ -193,11 +211,23 @@ pub(super) fn read(layer: &LayerData, source: &Path, kind: LightKind, time: Time
             light.texture_format = format;
         }
     }
-    if applies(layer, source, "ShapingAPI") {
+    if applies(layer, source, "ShapingAPI") || authors(layer, source, "inputs:shaping:") {
         light.cone = Some(Cone {
             angle: number("shaping:cone:angle", 90.0),
             softness: number("shaping:cone:softness", 0.0),
         });
+        light.focus = number("shaping:focus", light.focus);
+        if let Some((tint, 3)) =
+            input(layer, source, "shaping:focusTint", time).and_then(|v| reals(&v))
+            && tint.iter().all(|v| v.is_finite())
+        {
+            light.focus_tint = [tint[0], tint[1], tint[2]];
+        }
+        if let Some(Value::Asset(file)) = input(layer, source, "shaping:ies:file", time)
+            && !file.is_empty()
+        {
+            light.ies = Some(file);
+        }
     }
     light
 }
@@ -208,6 +238,14 @@ fn applies(layer: &LayerData, source: &Path, schema: &str) -> bool {
         Some(Value::TokenListOp(list)) => list.applied().iter().any(|t| t.as_str() == schema),
         _ => false,
     }
+}
+
+/// Whether the prim at `source` has a property named `prefix…`.
+fn authors(layer: &LayerData, source: &Path, prefix: &str) -> bool {
+    let properties = layer
+        .spec(source)
+        .map_or(&[][..], |s| s.tokens(field::PROPERTIES));
+    properties.iter().any(|p| p.starts_with(prefix))
 }
 
 /// Author `light` as its UsdLux prim (ancestors made as Xforms).
@@ -284,5 +322,14 @@ pub(super) fn write(author: &mut Author, path: &Path, light: &Light) {
         author.api_schema(path, "ShapingAPI");
         float(author, "shaping:cone:angle", cone.angle);
         float(author, "shaping:cone:softness", cone.softness);
+        if light.focus != 0.0 {
+            float(author, "shaping:focus", light.focus);
+            let tint = Value::Vec3f(light.focus_tint.map(|c| c as f32));
+            author.attribute(path, "inputs:shaping:focusTint", "color3f", tint, false);
+        }
+        if let Some(file) = &light.ies {
+            let file = Value::Asset(file.clone());
+            author.attribute(path, "inputs:shaping:ies:file", "asset", file, false);
+        }
     }
 }

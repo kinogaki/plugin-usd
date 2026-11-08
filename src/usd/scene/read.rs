@@ -1,11 +1,14 @@
-//! A composed stage read as a [`Scene`]: the stage flattened with its
-//! instances kept (a single layer is read as it is), then walked prim by
-//! prim, accumulating material bindings.
+//! A composed stage read as a [`Scene`]: the stage flattened with each
+//! prototype's prims beneath its source instance (a single layer is read as
+//! it is), then walked prim by prim, accumulating material bindings. Every
+//! prim, prototypes' too, is at a path of the stage, so a scene names no
+//! prim the stage lacks.
 //!
 //! Which prims load: defined, active prims (`over`s too within
 //! prototypes), of purpose `default` and `render` (`proxy` and `guide` when
 //! asked). Invisible prims load, marked. A group that holds nothing loads
-//! as nothing. Instanceable prims show shared prototypes, and a point
+//! as nothing. Instances show shared prototypes (the flattening says which
+//! prims are instances, and where each one's prototype is), and a point
 //! instancer's prototypes are its own (not drawn in place beneath it).
 //! The scene's warnings start with what composing the stage reported.
 
@@ -18,11 +21,11 @@ use super::{
     Asset, AssetSource, Node, NodeKind, Prototype, Scene, UpAxis, camera, curves, instancer, light,
     mesh, shapes,
 };
-use crate::usd::compose::{ForeignArc, assets};
+use crate::usd::compose::assets;
 use crate::usd::error::Result;
 use crate::usd::sdf::{LayerData, Path, PathMap, Specifier, Token, Value, field};
-use crate::usd::shade::{self, Material, MtlxDocument};
-use crate::usd::{FlattenOptions, Stage};
+use crate::usd::shade::{self, Material};
+use crate::usd::{FlattenOptions, Instances, Stage};
 use kinogaki_studio_api::format::ReadBudget;
 
 /// The most warnings a read keeps.
@@ -57,15 +60,18 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
         true => None,
         false => Some(stage.flatten_with(FlattenOptions {
             comment: false,
-            instancing: true,
+            instances: Instances::AtSource,
         })?),
     };
+    let no_instances = PathMap::default();
     let anchor = stage.root_identifier().to_owned();
     let budget = stage.budget().clone();
     let mut walker = Walker {
         budget: &budget,
-        layer: flattened.as_ref().unwrap_or_else(|| stage.root_layer()),
-        foreign: stage.foreign_arcs(),
+        layer: flattened
+            .as_ref()
+            .map_or_else(|| stage.root_layer(), |f| &f.layer),
+        instances: flattened.as_ref().map_or(&no_instances, |f| &f.instances),
         options,
         time,
         assets: AssetPaths {
@@ -172,8 +178,8 @@ struct Walker<'a> {
     /// Its cancellation stops the walk; its depth bounds the prims walked.
     budget: &'a ReadBudget,
     layer: &'a LayerData,
-    /// Arcs to MaterialX documents, which composition leaves to us.
-    foreign: &'a [ForeignArc],
+    /// Each instance's source, beneath which its prototype's prims are.
+    instances: &'a PathMap<Path>,
     options: &'a ReadOptions,
     time: Time,
     assets: AssetPaths<'a>,
@@ -207,10 +213,6 @@ impl Walker<'_> {
             return;
         };
         for name in spec.tokens(field::PRIM_CHILDREN) {
-            // The flattened stage's prototypes are reached through their instances.
-            if prim.is_absolute_root() && name.starts_with("Flattened_Prototype_") {
-                continue;
-            }
             self.prim(&prim.child(name.clone()), parent, inherited, prototype, out);
         }
     }
@@ -292,8 +294,9 @@ impl Walker<'_> {
             instance,
             kind,
         });
-        // A point instancer's children are its prototypes, not drawn in place.
-        if !matches!(out[index].kind, NodeKind::Instancer(_)) {
+        // A point instancer's children are its prototypes, and an instance's
+        // its prototype's prims: neither is drawn in place.
+        if !matches!(out[index].kind, NodeKind::Instancer(_)) && out[index].instance.is_none() {
             self.children(path, Some(index), here, prototype, out);
         }
         let empty = matches!(out[index].kind, NodeKind::Group)
@@ -350,20 +353,10 @@ impl Walker<'_> {
         })
     }
 
-    /// The prototype an instanceable prim at `path` shows: the flattened
-    /// stage's prototype its internal reference names.
+    /// The prototype the instance at `path` shows: its source's children.
     fn instance(&mut self, path: &Path, depth: usize) -> Option<usize> {
-        let spec = self.layer.spec(path)?;
-        if spec.get(field::INSTANCEABLE).and_then(Value::as_bool) != Some(true) {
-            return None;
-        }
-        let Some(Value::ReferenceListOp(list)) = spec.get(field::REFERENCES) else {
-            return None;
-        };
-        let target = (list.applied().into_iter())
-            .find(|r| r.asset.is_empty() && r.prim.name().starts_with("Flattened_Prototype_"))?
-            .prim;
-        match self.prototype(&target, false, depth) {
+        let source = self.instances.get(path)?.clone();
+        match self.prototype(&source, false, depth) {
             Ok(index) => Some(index),
             Err(why) => {
                 self.warn(format!("{path}: {why}; it shows nothing"));
@@ -469,9 +462,6 @@ impl Walker<'_> {
     }
 
     /// The Material at `path`, read once; none when no Material is there.
-    /// A material in a referenced MaterialX document (UsdMtlx's layout:
-    /// `/MaterialX/Materials/<name>` under the referencing prim) is one
-    /// with no network, naming its document.
     fn material(&mut self, path: &Path) -> Option<usize> {
         if let Some(&known) = self.material_at.get(path) {
             return known;
@@ -480,21 +470,7 @@ impl Walker<'_> {
             .layer
             .get(path, field::TYPE_NAME)
             .and_then(Value::as_token);
-        let typed = type_name.is_some_and(|t| t.as_str() == "Material");
-        let mut documents = Vec::new();
-        for arc in self.foreign {
-            if path.has_prefix(&arc.prim) {
-                let root = match arc.target.is_empty() {
-                    true => Path::absolute_root().child("MaterialX"),
-                    false => arc.target.clone(),
-                };
-                documents.push(MtlxDocument {
-                    asset: self.assets.name(&Token::from(arc.asset.as_str())),
-                    target: path.replace_prefix(&arc.prim, &root),
-                });
-            }
-        }
-        let found = if typed {
+        let found = if type_name.is_some_and(|t| t.as_str() == "Material") {
             let Walker {
                 layer,
                 time,
@@ -502,14 +478,7 @@ impl Walker<'_> {
                 warnings,
                 ..
             } = self;
-            let mut material =
-                shade::read(layer, path, *time, &mut |file| assets.name(file), warnings);
-            material.mtlx = documents;
-            self.materials.push(material);
-            Some(self.materials.len() - 1)
-        } else if !documents.is_empty() {
-            let mut material = Material::new(path.clone());
-            material.mtlx = documents;
+            let material = shade::read(layer, path, *time, &mut |file| assets.name(file), warnings);
             self.materials.push(material);
             Some(self.materials.len() - 1)
         } else {
@@ -534,6 +503,9 @@ impl Walker<'_> {
             let Some(child_spec) = self.layer.spec(&child) else {
                 continue;
             };
+            if self.instances.contains_key(&child) {
+                continue;
+            }
             if child_spec
                 .get(field::SPECIFIER)
                 .and_then(Value::as_specifier)

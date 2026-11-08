@@ -1,6 +1,7 @@
 //! What the format's tests share: reading and writing through the format
 //! alone (its color service converting nothing), and networks compared by
 //! what they hold.
+use kinogaki_studio_api::color::ColorService;
 use kinogaki_studio_api::geometry::{
     Attribute, Attributes, Domain, Geometry, Meaning, Primitives, Text, Units, UpAxis, names,
 };
@@ -8,7 +9,8 @@ use kinogaki_studio_api::image_files::{IMAGE_NODE, image_source};
 use kinogaki_studio_api::network::NetworkSeed;
 use kinogaki_studio_api::standard::{self, Materials};
 use kinogaki_studio_api::{
-    Data, FileFormat, FileItem, FormatOptions, Imported, Input, Purpose, Reading, Value, Writing,
+    Data, Error, FileFormat, FileItem, FormatOptions, Imported, Input, Purpose, Reading, Value,
+    Writing,
 };
 use kinogaki_studio_api_testing::Unconverted;
 pub use kinogaki_studio_api_testing::format::Scratch;
@@ -50,6 +52,47 @@ pub fn read_with(path: &Path, units: Units, options: &FormatOptions) -> Imported
 /// `items` written to `path` in `units`, with what it said.
 pub fn write_file(path: &Path, items: &[FileItem], units: Units) -> Vec<String> {
     let writing = Writing::new(units, &Unconverted);
+    let writer = Usd.writer().unwrap();
+    let said = writer
+        .write(path, items, &writing, &FormatOptions::new())
+        .unwrap();
+    said.into_iter().map(|d| d.message).collect()
+}
+
+/// A color service whose working space, `ACEScg`, holds any other space's
+/// colors at twice their numbers: what tells colors, which convert, from
+/// numbers, which don't.
+#[derive(Debug)]
+pub struct Doubling;
+
+impl ColorService for Doubling {
+    fn working(&self) -> &str {
+        "ACEScg"
+    }
+    fn convert(&self, from: &str, to: &str, rgb: &mut [[f64; 3]]) -> Result<(), Error> {
+        let k = match (from == self.working(), to == self.working()) {
+            (false, true) => 2.0,
+            (true, false) => 0.5,
+            _ => 1.0,
+        };
+        rgb.iter_mut().flatten().for_each(|c| *c *= k);
+        Ok(())
+    }
+    fn revision(&self) -> u64 {
+        0
+    }
+}
+
+/// The file at `path` read into metres with `colors`.
+pub fn read_in(path: &Path, colors: &dyn ColorService) -> Imported {
+    let reading = Reading::new(Purpose::Objects, metres(), colors);
+    Usd.read(&Input::file(path), &FormatOptions::new(), &reading)
+        .unwrap()
+}
+
+/// `items` written to `path` in metres with `colors`, with what it said.
+pub fn write_in(path: &Path, items: &[FileItem], colors: &dyn ColorService) -> Vec<String> {
+    let writing = Writing::new(metres(), colors);
     let writer = Usd.writer().unwrap();
     let said = writer
         .write(path, items, &writing, &FormatOptions::new())

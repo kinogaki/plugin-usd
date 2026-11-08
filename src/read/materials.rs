@@ -15,7 +15,7 @@
 //! which a host without that engine takes. Shaders no terminal reaches
 //! travel with the kept network (D20).
 use super::files::Files;
-use crate::names::{self, file_name};
+use crate::names;
 use crate::shading::{
     self, DOUBLE_SIDED_KEY, KINOGAKI, MTLX, NAME_KEY, OPACITY_MODES, UNIVERSAL, terminal,
 };
@@ -61,12 +61,6 @@ pub(super) fn material(
         if let Some(context) = context.filter(|c| !CONTEXTS.contains(c)) {
             warnings.push(format!("{key}: its {context} network is left out"));
         }
-    }
-    for document in &material.mtlx {
-        warnings.push(format!(
-            "{key}: the MaterialX document {} it references is left out",
-            file_name(&document.asset)
-        ));
     }
     let held: Vec<&str> = (CONTEXTS.into_iter())
         .filter(|c| material.output(&terminal(c, "surface")).is_some())
@@ -336,8 +330,8 @@ impl<'m> Reader<'m, '_, '_> {
             seed.wire(image, image_node::IMAGE, at, input);
             return;
         }
-        let mut color4 = false;
-        let read = match kind {
+        // What USD types a color (an engine's values by their kind) is one.
+        let (read, colored) = match kind {
             Kind::Mtlx(def, preview) => {
                 if preview.as_deref() == Some("UsdUVTexture") && input == "sourceColorSpace" {
                     return;
@@ -346,7 +340,7 @@ impl<'m> Reader<'m, '_, '_> {
                     self.say(format!("{} has no input {input}; left out", def.node));
                     return;
                 };
-                color4 = port.ty == kinogaki_mtlx::Type::Color4;
+                let colored = shading::is_color(&port.ty, preview.as_deref().map(|p| (p, input)));
                 let read = match (preview.as_deref(), input) {
                     (Some("UsdPreviewSurface"), "opacityMode") => (shading::text(value))
                         .and_then(|t| OPACITY_MODES.iter().position(|m| *m == t))
@@ -355,16 +349,22 @@ impl<'m> Reader<'m, '_, '_> {
                         .map(|t| Value::Choice(Arc::from(shading::mtlx_wrap(t)))),
                     _ => shading::mtlx_value(value, &port.ty, !port.enumeration.is_empty()),
                 };
-                read.map(|v| primvar_named(&def.node, input, v))
+                (read.map(|v| primvar_named(&def.node, input, v)), colored)
             }
-            Kind::Engine => shading::engine_value(value, &holder.type_name),
+            Kind::Engine => {
+                let read = shading::engine_value(value, &holder.type_name);
+                let colored = matches!(read, Some(Value::Color(_)));
+                (read, colored)
+            }
         };
         let Some(mut read) = read else {
             let ty = &holder.type_name;
             self.say(format!("{input} holds a {ty} it can't; left out"));
             return;
         };
-        self.in_working(&mut read, color4, holder.color_space.as_ref());
+        if colored {
+            self.in_working(&mut read, holder.color_space.as_ref());
+        }
         seed.nodes[at].parameters.insert(input.to_owned(), read);
     }
 
@@ -381,12 +381,13 @@ impl<'m> Reader<'m, '_, '_> {
         }
     }
 
-    /// A color `value` (a color, or a color4's numbers) authored in `space`
-    /// (linear Rec.709 when the file doesn't say) in the working space.
-    fn in_working(&mut self, value: &mut Value, color4: bool, space: Option<&Token>) {
+    /// A color `value` (a color3, or a color4's numbers) authored in
+    /// `space` (linear Rec.709 when the file doesn't say) in the working
+    /// space.
+    fn in_working(&mut self, value: &mut Value, space: Option<&Token>) {
         let rgb: &mut [f64] = match value {
             Value::Color(c) => c,
-            Value::Numbers(n) if color4 => &mut n[..3],
+            Value::Numbers(n) if n.len() == 4 => &mut n[..3],
             _ => return,
         };
         let from = space.map_or(LIN_REC709, Token::as_str);

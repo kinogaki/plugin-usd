@@ -9,7 +9,7 @@
 //! offset, and asset paths are anchored at the layer that authored them.
 //!
 //! - `mod.rs`: the walk over prims, and writing specs
-//! - `instances`: instances referencing shared prototypes
+//! - `instances`: instances sharing prototypes
 //! - `metadata`: composed metadata fields
 //! - `properties`: attributes and relationships
 //! - `schemas`, `schema_table`: built-in properties of prim types
@@ -32,10 +32,36 @@ pub struct FlattenOptions {
     /// Add OpenUSD's "Generated from Composed Stage" note to the layer's
     /// documentation.
     pub comment: bool,
-    /// Instances reference shared prototypes, as `UsdStage::Flatten` writes
-    /// them; without, each instance holds its own copy of its prototype's
-    /// prims (as instance proxies show them).
-    pub instancing: bool,
+    /// Where instances' prims go.
+    pub instances: Instances,
+}
+
+/// Where a flattened stage's instances find their prims.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Instances {
+    /// Each instance holds its own copy of its prototype's prims, as
+    /// instance proxies show them.
+    Copied,
+    /// Instances reference shared prototypes, root `over`s named
+    /// `Flattened_Prototype_N` (past the names the stage's root prims
+    /// take), as `UsdStage::Flatten` writes them.
+    Referenced,
+    /// A prototype's prims are written once, beneath its source instance
+    /// (its shallowest, then first in path order); the other instances hold
+    /// none. Every prim is at a path of the stage.
+    AtSource,
+}
+
+/// A flattened stage: its layer, and the prototype each instance shows.
+#[derive(Clone, Debug)]
+pub struct Flattened {
+    /// The layer.
+    pub layer: LayerData,
+    /// Each instance's prototype, by the prim its prims are the children
+    /// of in the layer: a `Flattened_Prototype_N` ([`Instances::Referenced`])
+    /// or its source instance ([`Instances::AtSource`]); none when instances
+    /// are [`Copied`](Instances::Copied).
+    pub instances: PathMap<Path>,
 }
 
 /// One place an opinion can be: a node's layer and the spec path in it.
@@ -69,14 +95,14 @@ pub(super) struct Flattener<'a> {
     instance_of: PathMap<usize>,
     /// While a prototype is written: its source and flattened paths.
     writing: Option<(Path, Path)>,
-    instancing: bool,
+    instances: Instances,
     /// The prim being written's type and applied API schemas.
     prim_type: Token,
     prim_applied: Vec<Token>,
 }
 
 /// Flatten the composer's stage into a new layer.
-pub fn flatten_stage(composer: &mut Composer, options: FlattenOptions) -> Result<LayerData> {
+pub fn flatten_stage(composer: &mut Composer, options: FlattenOptions) -> Result<Flattened> {
     let mut flat = Flattener {
         composer,
         out: LayerData::new(),
@@ -85,7 +111,7 @@ pub fn flatten_stage(composer: &mut Composer, options: FlattenOptions) -> Result
         prototypes: Vec::new(),
         instance_of: PathMap::default(),
         writing: None,
-        instancing: options.instancing,
+        instances: options.instances,
         prim_type: Token::empty(),
         prim_applied: Vec::new(),
     };
@@ -98,15 +124,30 @@ pub fn flatten_stage(composer: &mut Composer, options: FlattenOptions) -> Result
         .into_iter()
         .map(|name| root.child(name))
         .collect();
-    if options.instancing {
-        flat.populate(&roots)?;
-        flat.write_prototypes()?;
+    match options.instances {
+        Instances::Copied => {}
+        Instances::Referenced => {
+            flat.populate(&roots)?;
+            flat.write_prototypes(&roots)?;
+        }
+        Instances::AtSource => {
+            flat.populate(&roots)?;
+            for prototype in &mut flat.prototypes {
+                prototype.flattened = prototype.source.clone();
+            }
+        }
     }
     for path in &roots {
         flat.prims(path, path)?;
     }
     flat.finish();
-    Ok(flat.out)
+    let instances = (flat.instance_of.iter())
+        .map(|(instance, &p)| (instance.clone(), flat.prototypes[p].flattened.clone()))
+        .collect();
+    Ok(Flattened {
+        layer: flat.out,
+        instances,
+    })
 }
 
 impl Flattener<'_> {
@@ -218,8 +259,8 @@ impl Flattener<'_> {
             .entry(path.parent())
             .or_default()
             .push(path.name_token());
-        let instance = index.instanceable && self.instancing;
-        if instance {
+        let instance = index.instanceable && self.instances != Instances::Copied;
+        if instance && self.instances == Instances::Referenced {
             self.reference_prototype(source, path);
         }
         self.prim_metadata(&index, &opinions, path);
@@ -235,10 +276,19 @@ impl Flattener<'_> {
         for name in names {
             self.property(&index, path, &name)?;
         }
-        if instance {
+        // An instance's prims are its prototype's: beneath its source alone,
+        // or in the prototype written apart.
+        if instance && !self.holds_prototype(source) {
             return Ok(Vec::new());
         }
         Ok(self.composer.child_names(&index))
+    }
+
+    /// Whether the instance at `source` holds its prototype's prims: it is
+    /// the source the prototype is written beneath ([`Instances::AtSource`]).
+    fn holds_prototype(&self, source: &Path) -> bool {
+        self.instances == Instances::AtSource
+            && (self.instance_of.get(source)).is_some_and(|&p| self.prototypes[p].source == *source)
     }
 
     /// The opinions of the prim (`property` none) or of one of its

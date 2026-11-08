@@ -3,7 +3,10 @@
 //! stage's units; a camera's lens and film back are tenths of a stage unit
 //! (millimetres in a centimetre stage), the standard's millimetres; a
 //! light's color is linear Rec.709 unless the file says otherwise, the
-//! standard's the working space.
+//! standard's the working space. Of ShapingAPI, the standard light holds a
+//! sphere's cone (a spot); a cone on another shape, focus and an IES profile
+//! are left out, said ([`unshaped`]).
+use crate::names::file_name;
 use crate::usd::scene::{Camera as UsdCamera, Cone, Light as UsdLight, LightKind, Projection};
 use crate::usd::sdf::Token;
 use kinogaki_render_api::standard::{Emission, Light, LightShape};
@@ -71,6 +74,31 @@ pub(crate) fn light(
         normalize: light.normalize,
         color_temperature: light.color_temperature as f32,
         ..Light::default()
+    })
+}
+
+/// What of `light`'s shaping the standard light can't hold, in words, which
+/// is left out: a cone narrowing a light other than a sphere (a distant
+/// light's light leaves along its axis, which no cone cuts), focus (its tint
+/// with it), an IES profile; none when nothing is.
+pub(crate) fn unshaped(light: &UsdLight) -> Option<String> {
+    let narrows = |c: &Cone| c.angle < 90.0 || c.softness > 0.0;
+    let cone = match light.kind {
+        LightKind::Sphere | LightKind::Distant => false,
+        _ => light.cone.as_ref().is_some_and(narrows),
+    };
+    let lost: Vec<String> = [
+        cone.then(|| format!("cone on a {}", light.kind.type_name())),
+        (light.focus != 0.0).then(|| "focus".to_owned()),
+        (light.ies.as_ref()).map(|file| format!("IES profile {}", file_name(file))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let (last, rest) = lost.split_last()?;
+    Some(match rest {
+        [] => format!("ShapingAPI's {last} is left out"),
+        _ => format!("ShapingAPI's {} and {last} are left out", rest.join(", ")),
     })
 }
 

@@ -277,7 +277,7 @@ impl Out<'_> {
         let shaping = Shaping {
             materials: &self.materials,
             double_sided: &self.double_sided,
-            working: self.writing.colors.working(),
+            colors: self.writing.colors,
         };
         let value = rendered.as_ref().unwrap_or(value);
         let prims = geometry::prims(value, &shaping, &mut self.warnings);

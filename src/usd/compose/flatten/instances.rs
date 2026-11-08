@@ -5,10 +5,14 @@
 //! Instances with the same key share a prototype, whose source is one of
 //! them; the source's descendants are searched too, for nested instances.
 //! Prototypes are numbered in their sources' path order (as with
-//! `USD_ASSIGN_PROTOTYPES_DETERMINISTICALLY`) and written first, as
-//! `/Flattened_Prototype_N` in the text order of their `/__Prototype_M`
-//! paths: an over holding the source's children. Instances reference theirs.
+//! `USD_ASSIGN_PROTOTYPES_DETERMINISTICALLY`). Referenced, they are written
+//! first, as `/Flattened_Prototype_N` in the text order of their
+//! `/__Prototype_M` paths, N passing over the names the stage's root prims
+//! take (`_GenerateFlattenedPrototypePath`): an over holding the source's
+//! children, which instances reference. At their sources, a prototype's
+//! prims are its source's own, written where they are.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{Flattener, Prototype};
@@ -96,9 +100,10 @@ impl Flattener<'_> {
         Ok(())
     }
 
-    /// Name the prototypes and write each: an over with its source's
-    /// children (`_CopyPrototypePrim`).
-    pub(super) fn write_prototypes(&mut self) -> Result<()> {
+    /// Name the prototypes, past the names of the stage's root prims
+    /// (`roots`), and write each: an over with its source's children
+    /// (`_CopyPrototypePrim`).
+    pub(super) fn write_prototypes(&mut self, roots: &[Path]) -> Result<()> {
         let count = self.prototypes.len();
         if count == 0 {
             return Ok(());
@@ -112,9 +117,17 @@ impl Flattener<'_> {
                 .to_string()
                 .cmp(&self.prototypes[b].number.to_string())
         });
-        for (rank, &prototype) in by_text.iter().enumerate() {
-            self.prototypes[prototype].flattened =
-                Path::absolute_root().child(format!("Flattened_Prototype_{}", rank + 1));
+        let taken: HashSet<&Path> = roots.iter().collect();
+        let mut next = 1;
+        for &prototype in &by_text {
+            let flattened = loop {
+                let name = Path::absolute_root().child(format!("Flattened_Prototype_{next}"));
+                next += 1;
+                if !taken.contains(&name) {
+                    break name;
+                }
+            };
+            self.prototypes[prototype].flattened = flattened;
         }
         for &prototype in &by_text {
             let (source, flattened) = (

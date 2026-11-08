@@ -2,15 +2,17 @@
 //! but the process's workers (`parallel::map`), what bounds a read: its
 //! budget (`format::ReadBudget`), which every count and depth a file claims
 //! is checked against, and the resolver of the files a file names
-//! (`format::files::Named`), through which alone it reads the disk; and
-//! what a write shares: unique names (`format::Unique`) and files replaced
-//! whole (`format::files::replace`).
+//! (`format::files::Named`), through which alone it reads the disk; what a
+//! write shares: unique names (`format::Unique`) and files replaced whole
+//! (`format::files::replace`); and MaterialX's documents (`kinogaki-mtlx`).
 //!
 //! - [`sdf`]: the data model, after OpenUSD's Sdf: a layer is specs keyed by
 //!   path, each a list of fields.
 //! - [`text`], [`crate_file`], [`package`]: a layer as usda text, a usdc
 //!   crate, and a usdz package with the files it carries.
-//! - [`compose`]: stages composed and flattened, after Pcp and UsdStage.
+//! - [`compose`]: stages composed and flattened, after Pcp and UsdStage;
+//!   a MaterialX document a layer references composes as the layer UsdMtlx
+//!   makes of it (`mtlx`, through `kinogaki-mtlx`).
 //! - [`scene`]: the scene a stage describes, read and authored as plain
 //!   data; [`shade`]: its materials as UsdShade networks.
 //!
@@ -20,12 +22,13 @@ pub mod compose;
 pub mod crate_file;
 mod error;
 mod layer_file;
+pub(crate) mod mtlx;
 pub mod package;
 pub mod scene;
 pub mod sdf;
 pub mod shade;
 pub mod text;
 
-pub use compose::{FlattenOptions, Stage, StageOptions};
+pub use compose::{FlattenOptions, Flattened, Instances, Stage, StageOptions};
 pub use error::{Error, ErrorKind, Result};
 pub use layer_file::{Format, layer_bytes, read_layer_bytes, write_layer};

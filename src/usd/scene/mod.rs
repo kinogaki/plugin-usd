@@ -182,7 +182,9 @@ pub enum NodeKind {
 /// instancer's prototype prim with its own.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prototype {
-    /// The path its top prims are children of on the (flattened) stage.
+    /// The path its top prims are children of on the stage: the instance
+    /// its prims are read from (an instanceable prim's prototype), or the
+    /// point instancer it is a prototype of.
     pub root: Path,
     /// Its prims, parents before children; the ones at the top are placed
     /// by what shows the prototype.

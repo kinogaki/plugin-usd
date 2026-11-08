@@ -189,21 +189,15 @@ pub(crate) fn usd_type(ty: &Type, preview: Option<(&str, &str)>) -> &'static str
     {
         return usd;
     }
-    match ty {
-        Type::Boolean => "bool",
-        Type::Integer => "int",
-        Type::Float => "float",
-        Type::Color3 => "color3f",
-        Type::Color4 => "color4f",
-        Type::Vector2 => "float2",
-        Type::Vector3 => "float3",
-        Type::Vector4 => "float4",
-        Type::Matrix33 => "matrix3d",
-        Type::Matrix44 => "matrix4d",
-        Type::String => "string",
-        Type::Filename => "asset",
-        Type::Named(_) => "token",
-    }
+    crate::usd::mtlx::usd_type(ty)
+}
+
+/// Whether a MaterialX port of type `ty` holds a color, as USD types it
+/// ([`usd_type`]): a color3 or color4, but USD UV Texture's `scale`, `bias`
+/// and `fallback`, which multiply, add to and stand for texel values, are
+/// numbers.
+pub(crate) fn is_color(ty: &Type, preview: Option<(&str, &str)>) -> bool {
+    usd_type(ty, preview).starts_with("color")
 }
 
 /// The numbers a USD value holds, a scalar or a tuple (a bool or text: none).

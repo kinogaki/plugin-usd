@@ -6,7 +6,7 @@ use kinogaki_studio_api_testing::format::Scratch;
 use std::path::PathBuf;
 
 use kinogaki_usd::usd::sdf::{LayerData, Path, Value, field};
-use kinogaki_usd::usd::{FlattenOptions, StageOptions};
+use kinogaki_usd::usd::{FlattenOptions, Instances, StageOptions};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,12 +27,11 @@ fn text(layer: &LayerData, path: &str) -> Option<String> {
 
 fn flat(name: &str, options: &StageOptions) -> LayerData {
     let mut stage = crate::common::open_with(fixture(name), options).unwrap();
-    stage
-        .flatten_with(FlattenOptions {
-            comment: false,
-            instancing: false,
-        })
-        .unwrap()
+    let options = FlattenOptions {
+        comment: false,
+        instances: Instances::Copied,
+    };
+    stage.flatten_with(options).unwrap().layer
 }
 
 #[test]
@@ -315,4 +314,38 @@ def Xform "Root"
         .map(|n| n.as_str().to_owned())
         .collect();
     assert_eq!(names, ["a", "d", "e", "b", "c"]);
+}
+
+#[test]
+fn flattened_prototypes_pass_over_the_names_the_stage_takes() {
+    let scratch = Scratch::new("flattened-names");
+    let path = scratch.join("taken.usda");
+    let text = r#"#usda 1.0
+def Xform "Flattened_Prototype_1"
+{
+}
+
+def Xform "Asset"
+{
+    def Xform "Part"
+    {
+    }
+}
+
+def Xform "One" (
+    instanceable = true
+    references = </Asset>
+)
+{
+}
+"#;
+    std::fs::write(&path, text).unwrap();
+    // As `UsdStage::Flatten` names them: the next name no root prim takes.
+    let layer = crate::common::open(&path).unwrap().flatten().unwrap();
+    assert!(layer.has_spec(&p("/Flattened_Prototype_2/Part")));
+    assert!(!layer.has_spec(&p("/Flattened_Prototype_1/Part")));
+    let Some(Value::ReferenceListOp(list)) = layer.get(&p("/One"), field::REFERENCES) else {
+        panic!("/One has no reference");
+    };
+    assert_eq!(list.added[0].prim, p("/Flattened_Prototype_2"));
 }

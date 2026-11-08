@@ -15,15 +15,19 @@
 //! ([`Named`]: the read file's folder and below, regular files, within the
 //! read's budget); a composition given none reads nothing from disk. Only a
 //! `.usdz` opens as a package, and each package's file is read once (every
-//! layer and asset in it is a view of its bytes).
+//! layer and asset in it is a view of its bytes). A `.mtlx` file is a
+//! MaterialX document, opened as the layer UsdMtlx makes of it, its
+//! includes read the same way.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::assets;
 use crate::usd::error::{Error, Result};
+use crate::usd::mtlx;
 use crate::usd::package::{Bytes, Package, is_package};
 use crate::usd::sdf::{LayerData, Path, Token, Value, field};
+use kinogaki_mtlx::Included;
 use kinogaki_studio_api::format::ReadBudget;
 use kinogaki_studio_api::format::files::Named;
 
@@ -50,6 +54,8 @@ pub struct Layers {
     /// The files on disk it may read; none reads nothing from disk.
     disk: Option<Arc<Named>>,
     budget: ReadBudget,
+    /// What reading layers left out, one line each.
+    said: Vec<String>,
 }
 
 impl Layers {
@@ -64,7 +70,14 @@ impl Layers {
             packages: HashMap::new(),
             disk,
             budget,
+            said: Vec::new(),
         }
+    }
+
+    /// What reading layers left out (a MaterialX document's looks), one
+    /// line each.
+    pub fn said(&self) -> &[String] {
+        &self.said
     }
 
     /// What reading may spend, and its cancellation.
@@ -238,12 +251,50 @@ impl Layers {
         Ok(&self.packages[&identity])
     }
 
-    /// Read the layer an identifier names.
+    /// The bytes of the file an identifier names: a package's entry, else
+    /// a plain file's.
+    fn named_bytes(&mut self, identifier: &str) -> Result<Bytes> {
+        match assets::package_split(identifier) {
+            Some((outer, inner)) => self.package(outer)?.find(inner),
+            None => self.file_bytes(identifier),
+        }
+    }
+
+    /// Read the layer an identifier names: a MaterialX document as UsdMtlx
+    /// makes it a layer, else a layer by its signature.
     fn read(&mut self, identifier: &str) -> Result<LayerData> {
-        let bytes = match assets::package_split(identifier) {
-            Some((outer, inner)) => self.package(outer)?.find(inner)?,
-            None => self.file_bytes(identifier)?,
-        };
-        crate::usd::read_layer_bytes(&bytes, &self.budget)
+        let bytes = self.named_bytes(identifier)?;
+        if !mtlx::is_document(identifier) {
+            return crate::usd::read_layer_bytes(&bytes, &self.budget);
+        }
+        let text = std::str::from_utf8(&bytes).map_err(|_| Error::invalid("not UTF-8 text"))?;
+        let identity = self.identity(identifier);
+        let load = &mut |href: &str, within: Option<&str>| self.included(href, within);
+        let (layer, said) = mtlx::layer(text, &identity, load)?;
+        let file = identifier.trim_end_matches(']').rsplit(['/', '[']).next();
+        let file = file.unwrap_or(identifier);
+        (self.said).extend(said.into_iter().map(|line| format!("{file}: {line}")));
+        Ok(layer)
+    }
+
+    /// The MaterialX document an include names (`href`, relative to the
+    /// document of identity `within`): its identity and text; none, said,
+    /// when it can't be read.
+    fn included(&mut self, href: &str, within: Option<&str>) -> Option<Included> {
+        let identifier = assets::anchored(href, within?);
+        let read = (self.named_bytes(&identifier)).and_then(|bytes| {
+            String::from_utf8(bytes.to_vec()).map_err(|_| Error::invalid("not UTF-8 text"))
+        });
+        match read {
+            Ok(text) => Some(Included {
+                identity: self.identity(&identifier),
+                text,
+            }),
+            Err(why) => {
+                let said = format!("{href}: {}; what it holds is left out", why.message);
+                self.said.push(said);
+                None
+            }
+        }
     }
 }

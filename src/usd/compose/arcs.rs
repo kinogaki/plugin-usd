@@ -235,17 +235,6 @@ impl Composer {
         }
         let mut target_stack = stack;
         let mut target_layer = self.stacks.stack(stack).root;
-        if !internal && super::composer::is_foreign(&arc.asset) {
-            let foreign = super::composer::ForeignArc {
-                prim: self.composing.clone(),
-                asset: arc.asset.clone(),
-                target: prim,
-            };
-            if !self.foreign.contains(&foreign) {
-                self.foreign.push(foreign);
-            }
-            return Ok(());
-        }
         if !internal {
             let Some(opened) = self.layers.find_or_open(&arc.asset)? else {
                 self.problems

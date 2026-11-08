@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use super::assets;
-use super::composer::{ANONYMOUS_SESSION, Composer, ForeignArc};
-use super::flatten::{FlattenOptions, flatten_stage};
+use super::composer::{ANONYMOUS_SESSION, Composer};
+use super::flatten::{FlattenOptions, Flattened, Instances, flatten_stage};
 use super::graph::PrimIndex;
 use super::layers::Layers;
 use crate::usd::error::Result;
@@ -124,12 +124,6 @@ impl Stage {
         self.composer.layers.reads_disk()
     }
 
-    /// The arcs met so far to files of a format composition does not read
-    /// (a MaterialX document referenced as a layer), for their readers.
-    pub fn foreign_arcs(&self) -> &[ForeignArc] {
-        &self.composer.foreign
-    }
-
     /// The root layer.
     pub fn root_layer(&self) -> &LayerData {
         self.composer.layers.layer(self.composer.root_layer_index())
@@ -142,9 +136,14 @@ impl Stage {
             .identifier(self.composer.root_layer_index())
     }
 
-    /// Composition errors met so far, one line each.
+    /// Composition errors met so far, and what reading its layers left
+    /// out, one line each.
     pub fn warnings(&self) -> Vec<String> {
-        self.composer.problems.lines().to_vec()
+        let problems = self.composer.problems.lines().iter();
+        problems
+            .chain(self.composer.layers.said())
+            .cloned()
+            .collect()
     }
 
     /// Whether the stage is its root layer alone (no sublayers, arcs or
@@ -156,14 +155,16 @@ impl Stage {
     /// The composed stage as one layer, as `usdcat --flatten` writes it
     /// (instances referencing prototypes, the "Generated from" note).
     pub fn flatten(&mut self) -> Result<LayerData> {
-        self.flatten_with(FlattenOptions {
+        let options = FlattenOptions {
             comment: true,
-            instancing: true,
-        })
+            instances: Instances::Referenced,
+        };
+        Ok(self.flatten_with(options)?.layer)
     }
 
-    /// The composed stage as one layer, with `options`.
-    pub fn flatten_with(&mut self, options: FlattenOptions) -> Result<LayerData> {
+    /// The composed stage as one layer, with `options`, and where each
+    /// instance's prototype is in it.
+    pub fn flatten_with(&mut self, options: FlattenOptions) -> Result<Flattened> {
         flatten_stage(&mut self.composer, options)
     }
 

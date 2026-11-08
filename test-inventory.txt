@@ -5,6 +5,7 @@ kinogaki-usd/format hand measure::hand_run_the_grid_reads_and_writes_within_its_
 kinogaki-usd/format hand measure::hand_run_the_kitchen_set_imports_within_its_budget
 kinogaki-usd/format test export::a_domes_file_held_file_and_node_go_to_a_layer
 kinogaki-usd/format test export::an_instances_material_map_writes_a_prototype_in_its_materials
+kinogaki-usd/format test export::colors_are_written_in_linear_rec709_as_other_applications_read_them
 kinogaki-usd/format test export::curves_come_back_of_their_basis
 kinogaki-usd/format test export::instances_are_written_as_copies_each_with_its_material
 kinogaki-usd/format test export::lights_cameras_and_a_domes_image_come_back
@@ -37,15 +38,22 @@ kinogaki-usd/format test import::damaged_files_fail_and_a_cancelled_read_stops
 kinogaki-usd/format test import::instances_share_one_prototype_and_point_instancers_place_theirs
 kinogaki-usd/format test import::the_import_dialog_offers_embed_textures_off
 kinogaki-usd/format test import::units_scale_points_and_lengths_but_no_placement
+kinogaki-usd/format test lights::shaping_the_standard_light_cant_hold_is_said_once_a_light
+kinogaki-usd/format test lights::unauthored_intensities_are_each_kinds_fallback
 kinogaki-usd/format test materials::a_material_keeps_its_sides_whatever_shows_it
 kinogaki-usd/format test materials::a_materials_lengths_move_into_the_projects_units
 kinogaki-usd/format test materials::a_materialx_material_and_its_packaged_texture_come_back_as_they_were
+kinogaki-usd/format test materials::a_textures_scale_bias_and_fallback_are_numbers_read_and_written
 kinogaki-usd/format test materials::a_usd_preview_surface_comes_back_as_it_was_and_alone
 kinogaki-usd/format test materials::a_usdz_texture_reads_back_embedded_as_a_range_of_the_package
 kinogaki-usd/format test materials::an_engines_material_comes_back_as_itself_from_a_usdz
 kinogaki-usd/format test materials::kinogakis_textures_travel_as_materialx_ones_and_come_back_as_themselves
 kinogaki-usd/format test materials::other_applications_see_the_textured_base_color_in_the_preview
+kinogaki-usd/format test materialx::a_referenced_materialx_documents_materials_import_with_their_textures
 kinogaki-usd/format test measure::the_grid_writes_and_reads_back_whole
+kinogaki-usd/format test primvars::a_primvar_no_attribute_holds_is_left_out_with_its_prim_named
+kinogaki-usd/format test primvars::a_rest_primvar_reads_as_rest_positions_moved_into_the_project
+kinogaki-usd/format test primvars::a_transform_primvar_reads_as_placements_in_the_project
 kinogaki-usd/lib test lights::tests::a_lens_is_millimetres_whatever_the_stage_unit
 kinogaki-usd/lib test lights::tests::lights_read_and_write_back_in_any_units
 kinogaki-usd/lib test names::tests::file_names_end_asset_paths_inside_packages_too
@@ -68,6 +76,7 @@ kinogaki-usd/lib test usd::compose::strength::tests::siblings_order_by_livrps_th
 kinogaki-usd/lib test usd::crate_file::compression::tests::integers_round_trip
 kinogaki-usd/lib test usd::crate_file::lz4::tests::rejects_damage
 kinogaki-usd/lib test usd::crate_file::lz4::tests::round_trips
+kinogaki-usd/lib test usd::mtlx::tests::names_become_prim_names_unique_in_their_scope
 kinogaki-usd/lib test usd::package::crc32::tests::matches_the_standard_check_values
 kinogaki-usd/lib test usd::package::zip::tests::stored_archives_round_trip_aligned
 kinogaki-usd/lib test usd::scene::matrix::tests::inverse_undoes
@@ -96,6 +105,7 @@ kinogaki-usd/lib test write::preview::tests::an_open_pbr_surface_translates_thro
 kinogaki-usd/model test compose::a_prim_order_takes_the_runs_its_names_start
 kinogaki-usd/model test compose::cycles_and_missing_layers_are_reported
 kinogaki-usd/model test compose::deep_arc_chains_fail_cleanly
+kinogaki-usd/model test compose::flattened_prototypes_pass_over_the_names_the_stage_takes
 kinogaki-usd/model test compose::instances_share_prototypes
 kinogaki-usd/model test compose::mutated_layers_never_panic
 kinogaki-usd/model test compose::opinions_follow_livrps
@@ -110,6 +120,7 @@ kinogaki-usd/model test fuzz::mutated_crates_never_panic
 kinogaki-usd/model test fuzz::mutated_packages_never_panic
 kinogaki-usd/model test fuzz::mutated_text_never_panics
 kinogaki-usd/model test instancing::a_bad_instancer_reads_as_a_group_and_says_why
+kinogaki-usd/model test instancing::a_files_own_flattened_prototypes_are_its_prims_and_read_once
 kinogaki-usd/model test instancing::a_point_instancer_places_its_prototypes
 kinogaki-usd/model test instancing::a_point_instancer_writes_and_reads_back
 kinogaki-usd/model test instancing::a_prototype_holding_itself_is_refused
@@ -139,5 +150,5 @@ kinogaki-usd/model test shade::a_material_holds_every_render_context_as_authored
 kinogaki-usd/model test shade::bindings_follow_usd_shade
 kinogaki-usd/model test shade::connections_resolve_to_nodes_and_node_graph_interfaces
 kinogaki-usd/model test shade::networks_write_and_read_back_unchanged
-kinogaki-usd/model test shade::referenced_materialx_documents_are_kept_for_their_reader
+kinogaki-usd/model test shade::referenced_materialx_documents_compose_as_usdmtlx_lays_them_out
 kinogaki-usd/model test shade::texture_files_are_the_scenes_assets

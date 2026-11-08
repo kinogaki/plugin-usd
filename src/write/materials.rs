@@ -383,18 +383,20 @@ impl Network<'_> {
         context: &str,
     ) -> Option<Port> {
         let mut value = value.clone();
-        let (ty, color4) = match def {
+        let (ty, colored) = match def {
             Some(def) => {
                 let port = def.input(input)?;
                 if port.ty == Type::Filename {
                     return None;
                 }
-                (
-                    shading::usd_type(&port.ty, preview.map(|p| (p, input))),
-                    port.ty == Type::Color4,
-                )
+                let preview = preview.map(|p| (p, input));
+                let colored = shading::is_color(&port.ty, preview);
+                (shading::usd_type(&port.ty, preview), colored)
             }
-            None => (shading::engine_usd(&value)?.0, false),
+            None => {
+                let (ty, _) = shading::engine_usd(&value)?;
+                (ty, matches!(value, Value::Color(_)))
+            }
         };
         match (preview, input, &value) {
             (Some("UsdPreviewSurface"), "opacityMode", Value::Integer(k)) => {
@@ -415,7 +417,9 @@ impl Network<'_> {
                 value = Value::Text(names::primvar(name).to_owned());
             }
         }
-        let space = self.color_space(&mut value, color4, context);
+        let space = colored
+            .then(|| self.color_space(&mut value, context))
+            .flatten();
         let usd = match def {
             Some(_) => shading::usd_value(&value, ty),
             None => shading::engine_usd(&value).map(|(_, v)| v),
@@ -433,12 +437,13 @@ impl Network<'_> {
         Some(port)
     }
 
-    /// The space a color `value` is written in: the working space, said on
-    /// the input; USD Preview Surface's, linear Rec.709, converted to.
-    fn color_space(&mut self, value: &mut Value, color4: bool, context: &str) -> Option<String> {
+    /// The space a color `value` (a color3, or a color4's numbers) is
+    /// written in: the working space, said on the input; USD Preview
+    /// Surface's, linear Rec.709, converted to.
+    fn color_space(&mut self, value: &mut Value, context: &str) -> Option<String> {
         let rgb: &mut [f64] = match value {
             Value::Color(c) => c,
-            Value::Numbers(n) if color4 => &mut n[..3],
+            Value::Numbers(n) if n.len() == 4 => &mut n[..3],
             _ => return None,
         };
         if context != UNIVERSAL {

@@ -312,20 +312,37 @@ def Material "B"
     );
 }
 
-/// A MaterialX document, as UsdMtlx lays its materials out.
+/// A MaterialX document: a textured OpenPBR surface whose graph a material
+/// reads, its colors in linear Rec.709 unless one says otherwise.
 const STEEL_MTLX: &[u8] = br#"<?xml version="1.0"?>
-<materialx version="1.39">
+<materialx version="1.39" colorspace="lin_rec709">
+  <nodegraph name="NG_steel">
+    <image name="tint" type="color3">
+      <input name="file" type="filename" value="tex/tint.png" colorspace="srgb_texture" />
+    </image>
+    <image name="rough" type="float">
+      <input name="file" type="filename" value="tex/rough.png" />
+    </image>
+    <output name="tint_out" type="color3" nodename="tint" />
+    <output name="rough_out" type="float" nodename="rough" />
+  </nodegraph>
   <open_pbr_surface name="SR_steel" type="surfaceshader">
     <input name="base_metalness" type="float" value="1" />
+    <input name="base_color" type="color3" nodegraph="NG_steel" output="tint_out" />
+    <input name="specular_roughness" type="float" nodegraph="NG_steel" output="rough_out" />
+    <input name="specular_color" type="color3" value="0.9, 0.8, 0.7" />
   </open_pbr_surface>
   <surfacematerial name="Steel" type="material">
     <input name="surfaceshader" type="surfaceshader" nodename="SR_steel" />
   </surfacematerial>
+  <look name="Shiny">
+    <materialassign name="all" material="Steel" geom="/*" />
+  </look>
 </materialx>
 "#;
 
 #[test]
-fn referenced_materialx_documents_are_kept_for_their_reader() {
+fn referenced_materialx_documents_compose_as_usdmtlx_lays_them_out() {
     let layer = br#"#usda 1.0
 (
     defaultPrim = "Root"
@@ -359,35 +376,72 @@ def Xform "Root"
     let package = kinogaki_usd::usd::package::write_usdz(
         &kinogaki_usd::usd::text::read_usda(layer, &ReadBudget::default()).unwrap(),
         "root.usda",
-        &[("steel.mtlx", STEEL_MTLX)],
+        &[("steel.mtlx", STEEL_MTLX), ("tex/tint.png", b"png")],
     )
     .unwrap();
     let mut stage =
         Stage::open_memory("beam.usdz", Bytes::from(package), &StageOptions::default()).unwrap();
     let scene = scene::read(&mut stage, &ReadOptions::default()).unwrap();
-    assert!(
-        !stage.warnings().iter().any(|w| w.contains("steel.mtlx")),
-        "{:?}",
-        stage.warnings()
-    );
-    let steel = scene
-        .material(&Path::parse("/Root/MaterialX/Materials/Steel").unwrap())
-        .unwrap();
-    assert!(steel.nodes.is_empty());
-    assert_eq!(steel.mtlx[0].target.text(), "/MaterialX/Materials/Steel");
-    let chrome = scene
-        .material(&Path::parse("/Root/Chrome").unwrap())
-        .unwrap();
-    assert_eq!(chrome.mtlx[0].target.text(), "/MaterialX/Materials/Steel");
-    assert_eq!(chrome.mtlx[0].asset, steel.mtlx[0].asset);
-    let document = scene.asset(&steel.mtlx[0].asset).unwrap();
+    // Looks have no place in a layer of materials.
     assert_eq!(
-        document.source,
-        AssetSource::Bytes(Bytes::from(STEEL_MTLX.to_vec()))
+        stage.warnings(),
+        ["steel.mtlx: looks (Shiny…) and their material assignments are left out"]
     );
     let beam = node(&scene, "/Root/Beam").material.unwrap();
+    for (path, steel) in [
+        ("/Root/MaterialX/Materials/Steel", &scene.materials[beam]),
+        ("/Root/Chrome", scene.material(&p("/Root/Chrome")).unwrap()),
+    ] {
+        assert_eq!(steel.path.text(), path);
+        // The graph's nodes are the material's shaders, the surface its
+        // MaterialX terminal's.
+        let surface = steel.surface("mtlx").unwrap();
+        assert_eq!(surface.path.text(), format!("{path}/SR_steel"));
+        assert_eq!(
+            surface.id().map(Token::as_str),
+            Some("ND_open_pbr_surface_surfaceshader")
+        );
+        let metal = surface.input("base_metalness").unwrap();
+        assert_eq!(
+            (metal.type_name.as_str(), &metal.value),
+            ("float", &Some(Value::Float(1.0)))
+        );
+        let specular = surface.input("specular_color").unwrap();
+        assert_eq!(specular.type_name.as_str(), "color3f");
+        assert_eq!(
+            specular.color_space.as_ref().map(Token::as_str),
+            Some("lin_rec709")
+        );
+        let tint = steel.node(&p(&format!("{path}/tint"))).unwrap();
+        assert_eq!(
+            surface.input("base_color").unwrap().sources,
+            [Source {
+                node: Some(tint),
+                port: Token::new("out"),
+                output: true
+            }]
+        );
+        // A file is relative to the document; an image of colors says its
+        // color space, one of numbers none.
+        let file = steel.nodes[tint].input("file").unwrap();
+        assert_eq!(
+            file.value,
+            Some(Value::Asset(Token::new("/beam.usdz[tex/tint.png]")))
+        );
+        assert_eq!(
+            file.color_space.as_ref().map(Token::as_str),
+            Some("srgb_texture")
+        );
+        let rough = steel.node(&p(&format!("{path}/rough"))).unwrap();
+        assert_eq!(steel.nodes[rough].input("file").unwrap().color_space, None);
+    }
+    let tint = scene.asset("/beam.usdz[tex/tint.png]").unwrap();
     assert_eq!(
-        scene.materials[beam].path.text(),
-        "/Root/MaterialX/Materials/Steel"
+        tint.source,
+        AssetSource::Bytes(Bytes::from(b"png".to_vec()))
     );
+}
+
+fn p(text: &str) -> Path {
+    Path::parse(text).unwrap()
 }
