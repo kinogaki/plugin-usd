@@ -121,7 +121,8 @@ fn units_scale_points_and_lengths_but_no_placement() {
         key.shape,
         LightShape::Rect {
             width: 20.0,
-            height: 30.0
+            height: 30.0,
+            texture: None,
         }
     );
     let shot = standard::camera()
@@ -134,10 +135,12 @@ fn units_scale_points_and_lengths_but_no_placement() {
     let bulb = standard::light()
         .get(item(&read, "Bulb").1.unwrap())
         .unwrap();
-    let LightShape::Spot { cone_angle, .. } = bulb.shape else {
-        panic!("a sphere light is a spot");
-    };
-    assert_eq!(cone_angle, 180.0);
+    // A sphere light unshaped: light all round.
+    assert!(matches!(
+        bulb.shape,
+        LightShape::Sphere { point: false, .. }
+    ));
+    assert!(bulb.shaping.is_none());
 }
 
 #[test]

@@ -310,12 +310,16 @@ impl Out<'_> {
         }
         if let Some(light) = standard::light().get(data) {
             let texture = match &light.shape {
-                LightShape::Dome {
-                    image: Some(image), ..
-                } => self.dome(image),
+                LightShape::Dome { image, .. } => image.as_ref(),
+                LightShape::Rect { texture, .. } => texture.as_ref(),
                 _ => None,
             };
-            let usd = lights::usd_light(light, 1.0, texture, self.writing.colors)?;
+            let ies = light.shaping.as_ref().and_then(|s| s.ies.as_ref());
+            let files = lights::Files {
+                texture: texture.and_then(|image| self.light_file(image, "image")),
+                ies: ies.and_then(|profile| self.light_file(profile, "IES profile")),
+            };
+            let usd = lights::usd_light(light, 1.0, files, self.writing.colors)?;
             return Ok(Some(Kinds::One(NodeKind::Light(Box::new(usd)))));
         }
         if let Some(camera) = standard::camera().get(data) {
@@ -348,15 +352,16 @@ impl Out<'_> {
         Ok(Some(Kinds::Prims(prims.prims)))
     }
 
-    /// The asset a dome's image names: its file, packed or written beside
-    /// the layer when held embedded. A node's image is Export's to resolve
-    /// to its file; one left is said.
-    fn dome(&mut self, image: &ImageRef) -> Option<Token> {
+    /// The asset a light's image or IES profile (`what`) names: its file,
+    /// packed or written beside the layer when held embedded. A node's image
+    /// is Export's to resolve before writing; one here is left out, said.
+    fn light_file(&mut self, image: &ImageRef, what: &str) -> Option<Token> {
         let file = match image {
             ImageRef::File(source) => source.file(),
             ImageRef::Node(path) => {
-                let said =
-                    format!("a dome names the Image node {path}, which isn't written; left out");
+                let said = format!(
+                    "a light's {what} names the Image node {path}, which isn't written; left out"
+                );
                 self.warnings.push(said);
                 return None;
             }
@@ -365,7 +370,7 @@ impl Out<'_> {
             Ok(asset) => Some(asset),
             Err(e) => {
                 self.warnings
-                    .push(format!("a dome's image: {}; left out", e.message()));
+                    .push(format!("a light's {what}: {}; left out", e.message()));
                 None
             }
         }

@@ -341,14 +341,26 @@ impl Walker<'_> {
                     instancer::read(layer, path, prototypes, time)
                         .map(|i| NodeKind::Instancer(Box::new(i)))
                 }),
-            name if LightKind::unread(name) => Err(format!("{name} is not read")),
+            name if LightKind::unread(name).is_some() => Err(format!(
+                "{name} {}",
+                LightKind::unread(name).unwrap_or_default()
+            )),
             name => match (
                 LightKind::of_type(name),
                 shapes::read(layer, path, name, time),
             ) {
                 (Some(kind), _) => {
-                    let mut light = light::read(layer, path, kind, time);
+                    let mut light = light::read(layer, path, (kind, name), time);
                     light.texture = light.texture.map(|file| self.assets.name(&file));
+                    if let Some(shaping) = &mut light.shaping {
+                        shaping.ies = shaping.ies.take().map(|file| self.assets.name(&file));
+                    }
+                    let filters = layer.get(&path.property("light:filters"), field::TARGET_PATHS);
+                    if matches!(filters, Some(Value::PathListOp(l)) if !l.applied().is_empty()) {
+                        self.warn(format!(
+                            "{path}: its light filters are a renderer's own; left out"
+                        ));
+                    }
                     Ok(NodeKind::Light(Box::new(light)))
                 }
                 (None, Some(shape)) => Ok(NodeKind::Shape(Box::new(shape))),

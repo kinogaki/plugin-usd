@@ -35,7 +35,7 @@ pub use author::Author;
 pub use camera::{Camera, Projection};
 pub use curves::{CurveBasis, CurveForm, CurveWrap, Curves, Points};
 pub use instancer::Instancer;
-pub use light::{Cone, Light, LightKind};
+pub use light::{CAMERA, CAMERA_READ, Light, LightKind, Shadow, Shaping};
 pub use matrix::Matrix4d;
 pub use mesh::{Mesh, Subdivision, Subset, SubsetElement};
 pub use primvar::{Interpolation, Primvar};

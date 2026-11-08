@@ -3,8 +3,8 @@
 
 use crate::common::{fixture, mesh, node, paths, round_trips, scene_of, scene_with};
 use kinogaki_usd::usd::scene::{
-    Cone, CurveBasis, CurveForm, CurveWrap, Interpolation, LightKind, Matrix4d, NodeKind,
-    Projection, ReadOptions, ShapeForm, SubsetElement, UpAxis,
+    CurveBasis, CurveForm, CurveWrap, Interpolation, LightKind, Matrix4d, NodeKind, Projection,
+    ReadOptions, ShapeForm, SubsetElement, UpAxis,
 };
 use kinogaki_usd::usd::sdf::{Array, Value};
 
@@ -248,7 +248,7 @@ fn reads_cameras_as_authored_with_schema_fallbacks() {
 }
 
 #[test]
-fn reads_area_dome_distant_sphere_and_spot_lights_old_and_new_spellings() {
+fn reads_every_light_kind_old_and_new_spellings() {
     let scene = fixture("camera_light.usda");
     let lights: Vec<_> = (scene.nodes.iter())
         .filter_map(|n| match &n.kind {
@@ -259,7 +259,7 @@ fn reads_area_dome_distant_sphere_and_spot_lights_old_and_new_spellings() {
     use LightKind::*;
     assert_eq!(
         lights.iter().map(|l| l.kind).collect::<Vec<_>>(),
-        [Rect, Disk, Sphere, Distant, Dome, Sphere]
+        [Rect, Disk, Sphere, Distant, Dome, Sphere, Cylinder]
     );
     let key = &lights[0];
     assert_eq!(
@@ -273,7 +273,10 @@ fn reads_area_dome_distant_sphere_and_spot_lights_old_and_new_spellings() {
     );
     // Inputs written before UsdLux's `inputs:` prefix.
     assert_eq!((lights[1].intensity, lights[1].radius), (7.0, 4.0));
-    assert_eq!((lights[2].radius as f32, lights[2].cone), (0.1, None));
+    assert_eq!(
+        (lights[2].radius as f32, lights[2].shaping.is_none()),
+        (0.1, true)
+    );
     assert_eq!(lights[3].angle, 1.0);
     // The dome's image is one of the scene's assets, anchored at the layer.
     let sky = &lights[4];
@@ -285,23 +288,14 @@ fn reads_area_dome_distant_sphere_and_spot_lights_old_and_new_spellings() {
     let asset = scene.asset(texture).unwrap();
     assert_eq!(asset.authored.as_str(), "sky/noon.exr");
     let spot = &lights[5];
+    let shaping = spot.shaping.as_ref().unwrap();
     assert_eq!(
-        (spot.radius, spot.cone),
-        (
-            0.25,
-            Some(Cone {
-                angle: 30.0,
-                softness: 0.5
-            })
-        )
+        (spot.radius, shaping.cone_angle, shaping.cone_softness),
+        (0.25, 30.0, 0.5)
     );
-    let notes: Vec<&String> = scene
-        .warnings
-        .iter()
-        .filter(|w| w.contains("is not read"))
-        .collect();
-    assert_eq!(notes.len(), 1, "{notes:?}");
-    assert!(notes[0].starts_with("/World/Tube: CylinderLight"));
+    // A tube along X, two long.
+    assert_eq!(lights[6].length, 2.0);
+    assert!(scene.warnings.is_empty(), "{:?}", scene.warnings);
 }
 
 #[test]

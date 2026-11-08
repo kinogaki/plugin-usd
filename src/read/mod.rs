@@ -25,14 +25,14 @@ use crate::lights;
 use crate::space;
 use crate::usd::package::Bytes;
 use crate::usd::scene::{Instancer, Matrix4d, Node, NodeKind, ReadOptions, Scene};
-use crate::usd::sdf::Path;
+use crate::usd::sdf::{Path, Token};
 use crate::usd::{ErrorKind, Stage, StageOptions};
 use files::{Files, Held};
 use geometry::Shaping;
 use kinogaki_studio_api::color::LIN_REC709;
 use kinogaki_studio_api::edit::editor::{Placed, gather};
 use kinogaki_studio_api::format::files::Named;
-use kinogaki_studio_api::geometry::image::ImageSource;
+use kinogaki_studio_api::geometry::image::{ImageColor, ImageSource};
 use kinogaki_studio_api::geometry::{
     Attribute, Attributes, Column, Domain, Meaning, Text, Vec3, Xform, names,
 };
@@ -280,13 +280,19 @@ impl Walk<'_, '_> {
             }
             NodeKind::Light(light) => {
                 let scale = self.shaping.space.scale();
-                let image = (light.texture.as_ref())
-                    .and_then(|path| self.files.file(path))
-                    .map(|file| ImageRef::File(ImageSource::new(file, Default::default())));
-                if let Some(lost) = lights::unshaped(light) {
+                let mut image = |file: Option<&Token>, color: ImageColor| {
+                    let file = self.files.file(file?)?;
+                    Some(ImageRef::File(ImageSource::new(file, color)))
+                };
+                let ies = light.shaping.as_ref().and_then(|s| s.ies.as_ref());
+                let files = lights::Files {
+                    texture: image(light.texture.as_ref(), ImageColor::default()),
+                    ies: image(ies, ImageColor::Data),
+                };
+                if let Some(lost) = lights::left_out(light) {
                     self.warnings.push(format!("{path}: {lost}"));
                 }
-                let light = lights::light(light, scale, image, self.reading.colors);
+                let light = lights::light(light, scale, files, self.reading.colors);
                 match light.and_then(|l| standard::light().wrap(l)) {
                     Ok(light) => light,
                     Err(e) => return self.left_out(path, &e),

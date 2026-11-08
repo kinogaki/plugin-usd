@@ -42,8 +42,12 @@ kinogaki-usd/format test instances::a_prototypes_invisible_prims_and_other_famil
 kinogaki-usd/format test instances::a_shear_leaves_its_instances_instanceable_prims_of_their_own
 kinogaki-usd/format test instances::one_instance_and_shared_values_are_instanceable_prims_of_one_prototype
 kinogaki-usd/format test instances::several_instances_are_a_point_instancer_of_one_prototype_written_once
-kinogaki-usd/format test lights::shaping_the_standard_light_cant_hold_is_said_once_a_light
+kinogaki-usd/format test lights::camera_visibility_reads_ours_then_the_renderers_and_is_off_without
+kinogaki-usd/format test lights::every_intrinsic_kind_reads_as_its_standard_shape
+kinogaki-usd/format test lights::every_kind_and_api_writes_back_as_usdlux_writes_them
+kinogaki-usd/format test lights::light_api_shaping_and_shadows_read_on_any_shape
 kinogaki-usd/format test lights::unauthored_intensities_are_each_kinds_fallback
+kinogaki-usd/format test lights::what_no_standard_light_holds_is_said_once_a_light
 kinogaki-usd/format test materials::a_material_keeps_its_sides_whatever_shows_it
 kinogaki-usd/format test materials::a_materials_lengths_move_into_the_projects_units
 kinogaki-usd/format test materials::a_materialx_material_and_its_packaged_texture_come_back_as_they_were
@@ -143,9 +147,9 @@ kinogaki-usd/model test scene::colors_say_the_space_they_are_authored_in
 kinogaki-usd/model test scene::intrinsic_shapes_read_as_authored_and_tessellate
 kinogaki-usd/model test scene::points_read_with_widths_and_ids
 kinogaki-usd/model test scene::proxy_and_guide_purposes_load_when_asked
-kinogaki-usd/model test scene::reads_area_dome_distant_sphere_and_spot_lights_old_and_new_spellings
 kinogaki-usd/model test scene::reads_basis_and_nurbs_curves_as_authored
 kinogaki-usd/model test scene::reads_cameras_as_authored_with_schema_fallbacks
+kinogaki-usd/model test scene::reads_every_light_kind_old_and_new_spellings
 kinogaki-usd/model test scene::reads_primvars_as_authored_and_subsets_with_their_bindings
 kinogaki-usd/model test scene::reads_the_tree_with_local_transforms_and_units
 kinogaki-usd/model test scene::reads_time_samples_at_a_time

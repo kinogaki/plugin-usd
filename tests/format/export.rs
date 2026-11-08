@@ -165,17 +165,23 @@ fn lights_cameras_and_a_domes_image_come_back() {
     let dome = Light {
         shape: LightShape::Dome {
             image: Some(ImageRef::File(held)),
+            format: kinogaki_render_api::standard::DomeFormat::Automatic,
+            pole: kinogaki_render_api::standard::Pole::Scene,
             ground: None,
         },
         intensity: 2.0,
         ..Light::default()
     };
     let spot = Light {
-        shape: LightShape::Spot {
+        shape: LightShape::Sphere {
             radius: 0.25,
+            point: false,
+        },
+        shaping: Some(kinogaki_render_api::standard::Shaping {
             cone_angle: 30.0,
             cone_softness: 0.5,
-        },
+            ..Default::default()
+        }),
         color: [1.0, 0.5, 0.25],
         ..Light::default()
     };
@@ -230,6 +236,8 @@ fn a_domes_file_held_file_and_node_go_to_a_layer() {
         let light = Light {
             shape: LightShape::Dome {
                 image: Some(image),
+                format: kinogaki_render_api::standard::DomeFormat::Automatic,
+                pole: kinogaki_render_api::standard::Pole::Scene,
                 ground: None,
             },
             ..Light::default()
