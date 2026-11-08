@@ -6,7 +6,8 @@ use crate::support::{Scratch, item, materials, metres, read_file, square, write_
 use kinogaki_render_api::standard::{Light, LightShape};
 use kinogaki_render_api::{Camera, Projection};
 use kinogaki_studio_api::FileItem;
-use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageFile, ImageSource};
+use kinogaki_studio_api::geometry::EmbeddedFile;
+use kinogaki_studio_api::geometry::image::{ImageFile, ImageSource};
 use kinogaki_studio_api::geometry::{
     Attribute, Attributes, Basis, Column, CurveData, Domain, Elements, Geometry, Kind, Knots,
     Primitives, Text, Units, UpAxis, Vec3, Xform, names,

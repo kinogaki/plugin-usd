@@ -8,7 +8,8 @@
 //! workers a thread a core, as Studio installs them.
 use crate::support::{Scratch, metres, read_file, write_file};
 use kinogaki_studio_api::FileItem;
-use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageFile, ImageSource};
+use kinogaki_studio_api::geometry::EmbeddedFile;
+use kinogaki_studio_api::geometry::image::{ImageFile, ImageSource};
 use kinogaki_studio_api::geometry::{
     Attribute, Attributes, Domain, Geometry, Meaning, Primitives, Text, names,
 };

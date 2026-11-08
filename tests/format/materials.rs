@@ -13,7 +13,8 @@ use crate::support::{
     Scratch, materials, metres, read_file, read_with, shape, square, stage, write_file,
 };
 use kinogaki_studio_api::color::SRGB_TEXTURE;
-use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageColor, ImageFile, ImageSource};
+use kinogaki_studio_api::geometry::EmbeddedFile;
+use kinogaki_studio_api::geometry::image::{ImageColor, ImageFile, ImageSource};
 use kinogaki_studio_api::geometry::{
     Attribute, Attributes, Domain, Geometry, Primitives, Text, names,
 };

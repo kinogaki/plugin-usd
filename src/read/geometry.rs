@@ -367,12 +367,12 @@ fn moved(
         (Meaning::Normal, 3) => each(out, &|n| space.direction(n.into()).to_array()),
         (Meaning::Color, 3 | 4) => {
             let from = primvar.color_space.as_deref().unwrap_or(LIN_REC709);
-            let mut rgb: Vec<[f64; 3]> = (out.chunks_exact(width))
-                .map(|c| [c[0], c[1], c[2]].map(f64::from))
+            let mut rgb: Vec<[f32; 3]> = (out.chunks_exact(width))
+                .map(|c| [c[0], c[1], c[2]])
                 .collect();
-            match cx.colors.to_working(from, &mut rgb) {
+            match cx.colors.convert_f32(from, cx.colors.working(), &mut rgb) {
                 Ok(()) => (out.chunks_exact_mut(width).zip(&rgb))
-                    .for_each(|(c, w)| c[..3].copy_from_slice(&w.map(|v| v as f32))),
+                    .for_each(|(c, w)| c[..3].copy_from_slice(w)),
                 Err(e) => warnings.push(format!(
                     "primvar {}: colors kept as they are: {e}",
                     primvar.name

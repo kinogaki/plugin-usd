@@ -8,7 +8,8 @@ use crate::usd::package::Buffer;
 use crate::usd::scene::{AssetSource, Scene};
 use crate::usd::sdf::Token;
 use kinogaki_studio_api::format::files::Named;
-use kinogaki_studio_api::geometry::image::{EmbeddedFile, ImageFile};
+use kinogaki_studio_api::geometry::EmbeddedFile;
+use kinogaki_studio_api::geometry::image::ImageFile;
 use std::collections::HashMap;
 use std::sync::Arc;
 
