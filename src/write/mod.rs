@@ -25,10 +25,9 @@ use assets::Assets;
 use geometry::Shaping;
 use kinogaki_render_api::standard::LightShape;
 use kinogaki_studio_api::format::Unique;
-use kinogaki_studio_api::geometry::image::ImageFile;
 use kinogaki_studio_api::geometry::{Domain, UpAxis, names as standard_names};
-use kinogaki_studio_api::image_files::OP;
 use kinogaki_studio_api::standard::{self, Instances};
+use kinogaki_studio_api::value::ImageRef;
 use kinogaki_studio_api::{
     Data, DataTypeId, Diagnostic, Error, FileItem, FormatOptions, FormatWriter, Writing,
 };
@@ -70,7 +69,6 @@ impl FormatWriter for Writer {
             assets: Assets::of(path),
             materials: HashMap::new(),
             double_sided: Vec::new(),
-            images: HashMap::new(),
             prototypes: Vec::new(),
             writing,
             warnings: Vec::new(),
@@ -157,8 +155,6 @@ struct Out<'w> {
     materials: HashMap<Arc<str>, usize>,
     /// Whether each of the scene's materials is double-sided.
     double_sided: Vec<bool>,
-    /// The file each image domes name by `op:` reads, by its key.
-    images: HashMap<String, ImageFile>,
     /// Each prototype written, by what it is written of.
     prototypes: Vec<(Of, Prototype)>,
     writing: &'w Writing<'w>,
@@ -189,10 +185,6 @@ impl Out<'_> {
                 .insert(Arc::from(material.key.as_str()), self.scene.materials.len());
             self.double_sided.push(material.double_sided);
             self.scene.materials.push(made);
-        }
-        for image in &held.images {
-            self.images
-                .insert(image.key.clone(), image.source.file().clone());
         }
         Ok(())
     }
@@ -292,21 +284,20 @@ impl Out<'_> {
         Ok(Some(Kinds::Prims(prims.prims)))
     }
 
-    /// The asset a dome's image names: an image of the file's by `op:` and
-    /// its key, else a path.
-    fn dome(&mut self, image: &str) -> Option<Token> {
-        let file = match image.strip_prefix(OP) {
-            Some(key) => match self.images.get(key) {
-                Some(file) => file.clone(),
-                None => {
-                    let said = format!("a dome names {image}, which isn't written; left out");
-                    self.warnings.push(said);
-                    return None;
-                }
-            },
-            None => ImageFile::Path(Arc::from(image)),
+    /// The asset a dome's image names: its file, packed or written beside
+    /// the layer when held embedded. A node's image is Export's to resolve
+    /// to its file; one left is said.
+    fn dome(&mut self, image: &ImageRef) -> Option<Token> {
+        let file = match image {
+            ImageRef::File(source) => source.file(),
+            ImageRef::Node(path) => {
+                let said =
+                    format!("a dome names the Image node {path}, which isn't written; left out");
+                self.warnings.push(said);
+                return None;
+            }
         };
-        match self.assets.file(&file) {
+        match self.assets.file(file) {
             Ok(asset) => Some(asset),
             Err(e) => {
                 self.warnings

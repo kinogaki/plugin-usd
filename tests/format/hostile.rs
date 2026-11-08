@@ -2,10 +2,13 @@
 //! it (a 2 MiB stack, `read_hostile`): an error or a warning, within a time
 //! bound and, where memory was the point, within a small budget.
 use crate::crafted;
-use crate::support::{Scratch, materials, metres, write_file};
+use crate::support::{Scratch, metres, write_file};
+use kinogaki_render_api::standard::LightShape;
 use kinogaki_studio_api::format::{ReadLimits, options};
 use kinogaki_studio_api::geometry::image::{ImageFile, ImageSource};
 use kinogaki_studio_api::image_files::{IMAGE_NODE, image_source};
+use kinogaki_studio_api::standard;
+use kinogaki_studio_api::value::ImageRef;
 use kinogaki_studio_api::{Error, FileFormat, Imported, Input, Value};
 use kinogaki_studio_api_testing::read_hostile;
 use kinogaki_usd::Usd;
@@ -49,15 +52,26 @@ fn read_path(path: &Path, chosen: &[(&str, bool)]) -> Imported {
     read.unwrap()
 }
 
-/// Every file the read's Image nodes and images read.
+/// Every file the read's Image nodes and domes read.
 fn sources(read: &Imported) -> Vec<ImageSource> {
-    let looks = materials(read);
-    let nodes = looks.materials.iter().flat_map(|m| &m.inside.nodes);
+    let looks = (read.items.first()).and_then(|i| standard::materials().get(i.data.as_ref()?));
+    let materials = looks.into_iter().flat_map(|l| &l.materials);
+    let nodes = materials.flat_map(|m| &m.inside.nodes);
     let images = nodes.filter(|n| n.node_type == IMAGE_NODE);
     let mut found: Vec<ImageSource> = images
         .filter_map(|n| image_source(&n.parameters).ok().flatten())
         .collect();
-    found.extend(looks.images.iter().map(|i| i.source.clone()));
+    let lights = read
+        .items
+        .iter()
+        .filter_map(|i| standard::light().get(i.data.as_ref()?));
+    found.extend(lights.filter_map(|l| match &l.shape {
+        LightShape::Dome {
+            image: Some(ImageRef::File(source)),
+            ..
+        } => Some(source.clone()),
+        _ => None,
+    }));
     found
 }
 
@@ -481,7 +495,6 @@ fn a_usdz_packs_pictures_and_nothing_else() {
     };
     let looks = Materials {
         materials: vec![material],
-        images: Vec::new(),
     };
     let square = crate::support::square("/Looks/M");
     let items = vec![

@@ -88,7 +88,6 @@ fn items(megabytes: usize) -> Vec<FileItem> {
     };
     let looks = Materials {
         materials: vec![material],
-        images: Vec::new(),
     };
     vec![
         FileItem::top("Looks", standard::materials().wrap(looks)),

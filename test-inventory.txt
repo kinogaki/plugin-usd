@@ -3,6 +3,7 @@
 kinogaki-usd/format hand materials::hand_run_usdchecker_arkit_passes_materialx_and_preview_surface_usdz
 kinogaki-usd/format hand measure::hand_run_the_grid_reads_and_writes_within_its_budgets
 kinogaki-usd/format hand measure::hand_run_the_kitchen_set_imports_within_its_budget
+kinogaki-usd/format test export::a_domes_file_held_file_and_node_go_to_a_layer
 kinogaki-usd/format test export::an_instances_material_map_writes_a_prototype_in_its_materials
 kinogaki-usd/format test export::curves_come_back_of_their_basis
 kinogaki-usd/format test export::instances_are_written_as_copies_each_with_its_material
@@ -25,7 +26,7 @@ kinogaki-usd/format test hostile::reference_diamonds_compose_in_time_and_fail_pa
 kinogaki-usd/format test hostile::sublayers_named_over_and_over_stack_once
 kinogaki-usd/format test hostile::token_sections_claiming_more_than_they_hold_are_refused
 kinogaki-usd/format test hostile::variables_doubling_a_string_fail_without_the_doubling
-kinogaki-usd/format test import::a_dome_reads_its_image_by_op_and_key
+kinogaki-usd/format test import::a_dome_reads_its_texture_as_its_own_file
 kinogaki-usd/format test import::a_left_handed_mesh_winds_its_faces_the_other_way
 kinogaki-usd/format test import::a_light_or_camera_out_of_range_is_left_out_and_said
 kinogaki-usd/format test import::a_y_up_stages_faces_land_in_a_z_up_project_turned_not_mirrored

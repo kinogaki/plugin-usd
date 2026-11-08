@@ -12,9 +12,9 @@ use kinogaki_studio_api::geometry::{
     Attribute, Attributes, Basis, Column, CurveData, Domain, Elements, Geometry, Kind, Knots,
     Primitives, Text, Units, UpAxis, Vec3, Xform, names,
 };
-use kinogaki_studio_api::image_files::OP;
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
-use kinogaki_studio_api::standard::{self, ImportedImage, ImportedMaterial, Instances, Materials};
+use kinogaki_studio_api::standard::{self, ImportedMaterial, Instances, Materials};
+use kinogaki_studio_api::value::ImageRef;
 use std::sync::Arc;
 
 /// A material of no network but its OpenPBR Surface.
@@ -34,11 +34,8 @@ fn plain(key: &str, name: &str) -> ImportedMaterial {
     }
 }
 
-fn looks(materials: Vec<ImportedMaterial>, images: Vec<ImportedImage>) -> FileItem {
-    FileItem::top(
-        "Looks",
-        standard::materials().wrap(Materials { materials, images }),
-    )
+fn looks(materials: Vec<ImportedMaterial>) -> FileItem {
+    FileItem::top("Looks", standard::materials().wrap(Materials { materials }))
 }
 
 #[test]
@@ -60,7 +57,7 @@ fn polygons_come_back_where_they_were_in_any_units() {
     panel.placement = Xform::translation(Vec3::new(0.0, 0.0, 250.0));
     write_file(
         &path,
-        &[looks(vec![plain("/Looks/Red", "Red")], vec![]), panel],
+        &[looks(vec![plain("/Looks/Red", "Red")]), panel],
         millimetres,
     );
     // Read in the units it was written in, it is as it was.
@@ -173,10 +170,10 @@ fn instances_are_written_as_copies_each_with_its_material() {
         .unwrap();
     let row = Instances::new(vec![leaf], Column::new(xforms), None, attributes).unwrap();
     let items = [
-        looks(
-            vec![plain("/Looks/Red", "Red"), plain("/Looks/Blue", "Blue")],
-            vec![],
-        ),
+        looks(vec![
+            plain("/Looks/Red", "Red"),
+            plain("/Looks/Blue", "Blue"),
+        ]),
         FileItem::top("Row", standard::instances().wrap(row)),
     ];
     write_file(&path, &items, metres());
@@ -236,10 +233,10 @@ fn an_instances_material_map_writes_a_prototype_in_its_materials() {
         .unwrap();
     let row = Instances::new(vec![leaf], Column::new(xforms), None, attributes).unwrap();
     let items = [
-        looks(
-            vec![plain("/Looks/Red", "Red"), plain("/Looks/Blue", "Blue")],
-            vec![],
-        ),
+        looks(vec![
+            plain("/Looks/Red", "Red"),
+            plain("/Looks/Blue", "Blue"),
+        ]),
         FileItem::top("Row", standard::instances().wrap(row)),
     ];
     write_file(&path, &items, metres());
@@ -272,17 +269,13 @@ fn an_instances_material_map_writes_a_prototype_in_its_materials() {
 fn lights_cameras_and_a_domes_image_come_back() {
     let dir = Scratch::new("lights");
     let path = dir.join("stage.usdz");
-    let sky = ImportedImage {
-        key: "/Looks/Sky".into(),
-        name: "Sky".into(),
-        source: ImageSource::new(
-            ImageFile::Embedded(EmbeddedFile::new("sky.exr", vec![7; 64])),
-            Default::default(),
-        ),
-    };
+    let held = ImageSource::new(
+        ImageFile::Embedded(EmbeddedFile::new("sky.exr", vec![7; 64])),
+        Default::default(),
+    );
     let dome = Light {
         shape: LightShape::Dome {
-            image: Some(format!("{OP}/Looks/Sky").into()),
+            image: Some(ImageRef::File(held)),
             ground: None,
         },
         intensity: 2.0,
@@ -305,7 +298,6 @@ fn lights_cameras_and_a_domes_image_come_back() {
         ..Camera::default()
     };
     let items = [
-        looks(vec![], vec![sky]),
         FileItem::top("Sky", standard::light().wrap(dome.clone()).unwrap()),
         FileItem::top("Key", standard::light().wrap(spot.clone()).unwrap()),
         FileItem::top("Shot", standard::camera().wrap(lens.clone()).unwrap()),
@@ -323,17 +315,76 @@ fn lights_cameras_and_a_domes_image_come_back() {
     let back = standard::light()
         .get(item(&read, "Sky").1.unwrap())
         .unwrap();
-    let image = &materials(&read).images[0];
     let LightShape::Dome {
-        image: Some(named), ..
+        image: Some(ImageRef::File(source)),
+        ..
     } = &back.shape
     else {
-        panic!("a dome");
+        panic!("a dome reading its file: {:?}", back.shape);
     };
-    assert_eq!(**named, format!("{OP}{}", image.key));
-    let ImageFile::Embedded(file) = image.source.file() else {
+    let ImageFile::Embedded(file) = source.file() else {
         panic!("packed in the usdz");
     };
     assert_eq!((file.name(), file.bytes()), ("sky.exr", &[7u8; 64][..]));
     assert_eq!(back.intensity, 2.0);
+}
+
+/// A dome's image of each kind through a USD layer: a file on disk names
+/// it, a held one is written into the layer's textures folder and named, and an Image
+/// node (Export's to resolve to its file) is left out, said.
+#[test]
+fn a_domes_file_held_file_and_node_go_to_a_layer() {
+    let dir = Scratch::new("domes");
+    let path = dir.join("domes.usda");
+    std::fs::write(dir.join("noon.exr"), b"an exr").unwrap();
+    let dome = |image: ImageRef| {
+        let light = Light {
+            shape: LightShape::Dome {
+                image: Some(image),
+                ground: None,
+            },
+            ..Light::default()
+        };
+        standard::light().wrap(light).unwrap()
+    };
+    let on_disk = dir.join("noon.exr").display().to_string();
+    let held = ImageFile::Embedded(EmbeddedFile::new("dusk.exr", vec![9; 16]));
+    let items = [
+        FileItem::top("Noon", dome(ImageRef::File(ImageSource::path(&on_disk)))),
+        FileItem::top(
+            "Dusk",
+            dome(ImageRef::File(ImageSource::new(held, Default::default()))),
+        ),
+        FileItem::top("Node", dome(ImageRef::Node(Arc::from("/Library/Sky")))),
+    ];
+    let said = write_file(&path, &items, metres()).join("\n");
+    assert!(said.contains("Image node /Library/Sky"), "{said}");
+    assert_eq!(
+        std::fs::read(dir.join("domes_textures/dusk.exr")).unwrap(),
+        [9; 16]
+    );
+    let read = read_file(&path, metres(), false);
+    let file = |name: &str| {
+        let light = standard::light().get(item(&read, name).1.unwrap()).unwrap();
+        match &light.shape {
+            LightShape::Dome {
+                image: Some(ImageRef::File(source)),
+                ..
+            } => source.file().clone(),
+            other => panic!("{name}: {other:?}"),
+        }
+    };
+    let named = |name: &str| match file(name) {
+        ImageFile::Path(path) => std::path::PathBuf::from(&*path),
+        ImageFile::Embedded(f) => panic!("{name}: held {}", f.name()),
+    };
+    assert_eq!(
+        named("Noon").canonicalize().unwrap(),
+        dir.join("noon.exr").canonicalize().unwrap()
+    );
+    assert_eq!(named("Dusk").file_name().unwrap(), "dusk.exr");
+    let node = standard::light()
+        .get(item(&read, "Node").1.unwrap())
+        .unwrap();
+    assert!(matches!(node.shape, LightShape::Dome { image: None, .. }));
 }

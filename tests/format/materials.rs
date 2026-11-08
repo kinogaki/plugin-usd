@@ -156,10 +156,7 @@ fn items(materials: Vec<ImportedMaterial>) -> Vec<FileItem> {
     let squares: Vec<FileItem> = (materials.iter())
         .map(|m| FileItem::top(m.name.clone(), standard::geometry().wrap(square(&m.key))))
         .collect();
-    let looks = Materials {
-        materials,
-        images: Vec::new(),
-    };
+    let looks = Materials { materials };
     let mut items = vec![FileItem::top("Looks", standard::materials().wrap(looks))];
     items.extend(squares);
     items
@@ -453,7 +450,6 @@ fn a_material_keeps_its_sides_whatever_shows_it() {
     let shared = two_faces(&double.key, &single.key);
     let looks = Materials {
         materials: vec![spare, double, single],
-        images: Vec::new(),
     };
     let items = vec![
         FileItem::top("Looks", standard::materials().wrap(looks)),

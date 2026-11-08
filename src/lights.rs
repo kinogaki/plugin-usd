@@ -10,6 +10,7 @@ use kinogaki_render_api::standard::{Emission, Light, LightShape};
 use kinogaki_render_api::{Camera, Projection as Lens};
 use kinogaki_studio_api::Error;
 use kinogaki_studio_api::color::{ColorService, LIN_REC709};
+use kinogaki_studio_api::value::ImageRef;
 
 /// Millimetres a tenth of a stage unit of `meters_per_unit` is.
 fn millimetres(meters_per_unit: f64) -> f64 {
@@ -18,11 +19,11 @@ fn millimetres(meters_per_unit: f64) -> f64 {
 
 /// `light` as the standard light: its sizes times `scale` (the project's
 /// units per stage unit), its color in the working space, a dome reading
-/// `image` (`op:` and its key). A sphere without a cone is a spot of 180°.
+/// `image` (its file). A sphere without a cone is a spot of 180°.
 pub(crate) fn light(
     light: &UsdLight,
     scale: f64,
-    image: Option<String>,
+    image: Option<ImageRef>,
     colors: &dyn ColorService,
 ) -> Result<Light, Error> {
     let length = |v: f64| (v * scale) as f32;
@@ -35,7 +36,7 @@ pub(crate) fn light(
             radius: length(light.radius),
         },
         LightKind::Dome => LightShape::Dome {
-            image: image.map(Into::into),
+            image,
             ground: None,
         },
         LightKind::Distant => LightShape::Distant {

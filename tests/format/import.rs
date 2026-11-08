@@ -5,8 +5,9 @@ use crate::support::{Scratch, fixture, item, materials, metres, read_file};
 use kinogaki_render_api::standard::LightShape;
 use kinogaki_studio_api::geometry::image::ImageFile;
 use kinogaki_studio_api::geometry::{Domain, Units, UpAxis, Vec3, names};
-use kinogaki_studio_api::image_files::{IMAGE_NODE, OP, image_source};
+use kinogaki_studio_api::image_files::{IMAGE_NODE, image_source};
 use kinogaki_studio_api::standard;
+use kinogaki_studio_api::value::ImageRef;
 use kinogaki_studio_api::{
     CancelToken, Error, FileFormat, FormatOptions, Input, Purpose, Reading, Value,
 };
@@ -230,8 +231,9 @@ def PointInstancer "Field"
     assert_eq!(at, [Vec3::new(0.0, 0.0, 0.0), Vec3::new(4.0, 0.0, 0.0)]);
 }
 
+/// A DomeLight's texture is the dome's own file: with Embed Textures, held.
 #[test]
-fn a_dome_reads_its_image_by_op_and_key() {
+fn a_dome_reads_its_texture_as_its_own_file() {
     let layer = br#"#usda 1.0
 def DomeLight "Sky"
 {
@@ -243,22 +245,23 @@ def DomeLight "Sky"
     std::fs::write(&path, layer).unwrap();
     std::fs::write(dir.join("sky.exr"), b"not really an exr").unwrap();
     let read = read_file(&path, metres(), true);
-    let image = &materials(&read).images[0];
-    assert_eq!(image.name, "sky");
-    let ImageFile::Embedded(file) = image.source.file() else {
-        panic!("Embed Textures reads it in");
-    };
-    assert_eq!(file.bytes(), b"not really an exr");
     let sky = standard::light()
         .get(item(&read, "Sky").1.unwrap())
         .unwrap();
     let LightShape::Dome {
-        image: Some(named), ..
+        image: Some(ImageRef::File(source)),
+        ..
     } = &sky.shape
     else {
-        panic!("a dome");
+        panic!("a dome reading its file: {:?}", sky.shape);
     };
-    assert_eq!(**named, format!("{OP}{}", image.key));
+    let ImageFile::Embedded(file) = source.file() else {
+        panic!("Embed Textures reads it in");
+    };
+    assert_eq!(
+        (file.name(), file.bytes()),
+        ("sky.exr", &b"not really an exr"[..])
+    );
 }
 
 #[test]
