@@ -2,9 +2,11 @@
 //! file read once, a package's entries ranges of it), composed and read as
 //! a scene, then mapped into the project's space as items.
 //!
-//! - **Materials** come first, as one item: every Material prim keyed by its
-//!   path ([`materials`]), with the images domes read.
-//! - **Prims** follow, parents first, each placed where the stage places it
+//! - **Materials**: every Material prim keyed by its path ([`materials`]),
+//!   in a Material Library at the place of the prim holding it
+//!   ([`libraries`]): a Scope of Materials alone is a library, its item where
+//!   the Scope is.
+//! - **Prims**, parents first, each placed where the stage places it
 //!   (`!resetXformStack!` kept): a group, or a mesh, shape, curves or points
 //!   ([`geometry`]), a light or a camera ([`crate::lights`]).
 //! - **Instances.** A prototype is held once as one value (its geometry
@@ -14,22 +16,25 @@
 //!   (placed where the instancer puts it, holding nothing else) is that
 //!   other, as Export writes them. An instance binding a material the
 //!   prototype's prims leave to it, or one stronger than theirs, names it
-//!   on the Instance domain; a point instancer's `ids`, `velocities` and
-//!   `displayColor` are its instances' `id`, `v` and `Cd`.
+//!   on the Instance domain; a point instancer's `ids` and `velocities` are
+//!   its instances' `id` and `v`, and each primvar of one value an instance
+//!   an attribute of theirs (`displayColor` their `Cd`).
 mod files;
 mod geometry;
+mod libraries;
 mod materials;
 mod primvars;
 
 use crate::lights;
 use crate::space;
 use crate::usd::package::Bytes;
-use crate::usd::scene::{Instancer, Matrix4d, Node, NodeKind, ReadOptions, Scene};
+use crate::usd::scene::{
+    Instancer, Interpolation, Matrix4d, Node, NodeKind, Primvar, ReadOptions, Scene,
+};
 use crate::usd::sdf::{Path, Token};
 use crate::usd::{ErrorKind, Stage, StageOptions};
 use files::{Files, Held};
 use geometry::Shaping;
-use kinogaki_studio_api::color::LIN_REC709;
 use kinogaki_studio_api::edit::editor::{Placed, gather};
 use kinogaki_studio_api::format::files::Named;
 use kinogaki_studio_api::geometry::image::{ImageColor, ImageSource};
@@ -39,8 +44,10 @@ use kinogaki_studio_api::geometry::{
 use kinogaki_studio_api::standard::{self, Instances, MAX_DEPTH, Materials};
 use kinogaki_studio_api::value::ImageRef;
 use kinogaki_studio_api::{
-    Data, Diagnostic, Error, FileItem, FormatOptions, Imported, Input, Reading,
+    Data, Diagnostic, Error, FileItem, FormatOptions, Imported, Input, Purpose, Reading,
 };
+use libraries::Place;
+use primvars::Spread;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -75,13 +82,27 @@ pub(crate) fn read(
         .collect();
     let mut files = Files::new(&scene, &held, &named);
     let mut warnings = scene.warnings.clone();
-    let mut looks = Materials::default();
+    let mut looks = Vec::with_capacity(scene.materials.len());
     let single = single_sided(&scene);
     for (k, material) in scene.materials.iter().enumerate() {
         reading.check()?;
         let sides = (space.scale(), single[k]);
         let read = materials::material(material, &mut files, reading.colors, &mut warnings, sides);
-        looks.materials.push(read);
+        looks.push(read);
+    }
+    if reading.purpose == Purpose::Value && reading.wants == Some(standard::materials().id()) {
+        let all = Materials { materials: looks };
+        let item = FileItem::top(input.name(), standard::materials().wrap(all));
+        let warnings = said(warnings);
+        return Ok(Imported {
+            items: vec![item],
+            warnings,
+        });
+    }
+    let mut libraries = HashMap::new();
+    for (place, held) in libraries::libraries(&scene, &mut warnings) {
+        let materials = held.into_iter().map(|m| looks[m].clone()).collect();
+        libraries.insert(place, standard::materials().wrap(Materials { materials }));
     }
     let mut walk = Walk {
         scene: &scene,
@@ -92,10 +113,12 @@ pub(crate) fn read(
         },
         reading,
         items: Vec::new(),
+        libraries,
         prototypes: HashMap::new(),
         files: &mut files,
         warnings: &mut warnings,
     };
+    walk.library(Place::Under(None), None);
     let mut at = Vec::with_capacity(scene.nodes.len());
     for node in &scene.nodes {
         reading.check()?;
@@ -103,24 +126,9 @@ pub(crate) fn read(
         at.push(placed);
     }
     let Walk { items, .. } = walk;
-    let mut all = Vec::with_capacity(items.len() + 1);
-    if !looks.materials.is_empty() {
-        all.push(FileItem::top(
-            "Materials",
-            standard::materials().wrap(looks),
-        ));
-    }
-    let shift = all.len();
-    all.extend(items.into_iter().map(|mut item| {
-        item.parent = item.parent.map(|p| p + shift);
-        item
-    }));
     let mut warnings = said(warnings);
     warnings.extend(named.warnings());
-    Ok(Imported {
-        items: all,
-        warnings,
-    })
+    Ok(Imported { items, warnings })
 }
 
 /// Each material's sidedness: a mesh's `doubleSided` is its material's
@@ -200,6 +208,8 @@ struct Walk<'s, 'w> {
     shaping: Shaping<'w>,
     reading: &'w Reading<'w>,
     items: Vec<FileItem>,
+    /// Each library's materials by its place, until its item is made.
+    libraries: HashMap<Place, Data>,
     /// Each prototype as one value, made once; none when it shows nothing.
     prototypes: HashMap<usize, Option<Data>>,
     files: &'w mut Files<'s>,
@@ -207,7 +217,20 @@ struct Walk<'s, 'w> {
 }
 
 impl Walk<'_, '_> {
-    /// `node` as an item under its parent's (`at`, each earlier node's).
+    /// The library at `place` as an item under item `parent`, named
+    /// [`libraries::MATERIALS`], when there is one.
+    fn library(&mut self, place: Place, parent: Option<usize>) {
+        if let Some(materials) = self.libraries.remove(&place) {
+            self.items.push(FileItem {
+                parent,
+                ..FileItem::top(libraries::MATERIALS, materials)
+            });
+        }
+    }
+
+    /// `node` as an item under its parent's (`at`, each earlier node's): a
+    /// Scope of Materials its library, with the library of Materials beside
+    /// its children first.
     fn node(&mut self, node: &Node, at: &[At]) -> Result<At, Error> {
         let space = self.shaping.space;
         // A camera or a light keeps the frame it looks down.
@@ -224,7 +247,11 @@ impl Walk<'_, '_> {
             }
             false => (local, world_above.compose(&local)),
         };
-        let data = self.data(node, &self.scene.path(at.len()), 0)?;
+        let k = at.len();
+        let data = match self.libraries.remove(&Place::Node(k)) {
+            Some(library) => Some(library),
+            None => self.data(node, &self.scene.path(k), 0)?,
+        };
         let instance = match node.instance {
             Some(p) => self.instance(p, bound(node), 0)?,
             None => None,
@@ -247,6 +274,7 @@ impl Walk<'_, '_> {
                 ..FileItem::top(node.name.to_string(), instance)
             });
         }
+        self.library(Place::Under(Some(k)), Some(item));
         Ok(At { item, world })
     }
 
@@ -265,11 +293,15 @@ impl Walk<'_, '_> {
                 let polygons = geometry::mesh(&mesh, node.material, cx, path, self.warnings)?;
                 standard::geometry().wrap(polygons)
             }
-            NodeKind::Curves(curves) => match geometry::curves(curves, cx, path, self.warnings) {
-                Ok(curves) => standard::geometry().wrap(curves),
-                Err(e) => return self.left_out(path, &e),
-            },
-            NodeKind::Points(points) => standard::geometry().wrap(geometry::points(points, cx)?),
+            NodeKind::Curves(curves) => {
+                match geometry::curves(curves, node.material, cx, path, self.warnings) {
+                    Ok(curves) => standard::geometry().wrap(curves),
+                    Err(e) => return self.left_out(path, &e),
+                }
+            }
+            NodeKind::Points(points) => {
+                standard::geometry().wrap(geometry::points(points, cx, path, self.warnings)?)
+            }
             NodeKind::Camera(camera) => {
                 let space = cx.space;
                 let lens = lights::camera(camera, self.scene.meters_per_unit, space.scale());
@@ -299,7 +331,7 @@ impl Walk<'_, '_> {
                 }
             }
             NodeKind::Instancer(instancer) => {
-                match self.instancer(instancer, bound(node), depth)? {
+                match self.instancer((instancer, path), bound(node), depth)? {
                     Some(instances) => instances,
                     None => return Ok(None),
                 }
@@ -328,7 +360,7 @@ impl Walk<'_, '_> {
     /// binding what its prototype's prim binds, else `material`.
     fn instancer(
         &mut self,
-        instancer: &Instancer,
+        (instancer, path): (&Instancer, &Path),
         material: Bound,
         depth: usize,
     ) -> Result<Option<Data>, Error> {
@@ -367,7 +399,7 @@ impl Walk<'_, '_> {
             return Ok(None);
         }
         let attributes = self.bound(&bindings)?;
-        let attributes = self.per_instance(attributes, instancer, &kept)?;
+        let attributes = self.per_instance(attributes, (instancer, path), &kept)?;
         let which = (prototypes.len() > 1).then(|| which.into());
         self.instances(prototypes, xforms.into(), which, attributes)
     }
@@ -394,13 +426,15 @@ impl Walk<'_, '_> {
         }
     }
 
-    /// `attributes` with the point instancer's `ids` as the instances'
-    /// `id`, its `velocities` their `v` and its `displayColor` their `Cd`,
-    /// of the instances `kept`.
+    /// `attributes` with the point instancer's `ids` as the instances' `id`,
+    /// its `velocities` their `v`, and every primvar of one value an
+    /// instance (`vertex` or `varying`) an attribute of theirs as a mesh's
+    /// primvar is (`displayColor` their `Cd`), of the instances `kept`;
+    /// a primvar of another interpolation is left out, said.
     fn per_instance(
         &mut self,
         attributes: Attributes,
-        instancer: &Instancer,
+        (instancer, path): (&Instancer, &Path),
         kept: &[usize],
     ) -> Result<Attributes, Error> {
         let mut attributes = attributes;
@@ -412,40 +446,64 @@ impl Walk<'_, '_> {
                 Attribute::tuples(ids, Meaning::None)?,
             )?;
         }
-        let space = self.shaping.space;
+        let picked: Vec<u32> = kept.iter().map(|&i| i as u32).collect();
+        let spread = Spread {
+            primitives: Some(&picked),
+            corners: None,
+            points: 0,
+            faces: instancer.len(),
+            vertices: 0,
+        };
         for primvar in &instancer.primvars {
-            let Some(values) = primvar.values.as_array().and_then(|a| match a {
-                crate::usd::sdf::Array::Vec3f(v) if v.len() == instancer.len() => Some(v),
-                _ => None,
-            }) else {
-                continue;
-            };
-            let mut picked: Vec<[f32; 3]> = kept.iter().map(|&i| values[i]).collect();
-            let (name, meaning) = match primvar.name.as_str() {
-                "velocities" => {
-                    let scale = space.scale();
-                    for v in &mut picked {
-                        let d = space.direction(Vec3::new(v[0].into(), v[1].into(), v[2].into()))
-                            * scale;
-                        *v = [d.x, d.y, d.z].map(|c| c as f32);
-                    }
-                    (names::V, Meaning::Vector)
+            attributes = match (primvar.name.as_str(), primvar.interpolation) {
+                ("velocities", _) => self.velocities(attributes, primvar, kept)?,
+                (_, Interpolation::Vertex | Interpolation::Varying) => {
+                    let on = (primvar, Domain::Instance);
+                    let cx = &self.shaping;
+                    primvars::attribute_on(attributes, on, &spread, cx, path, self.warnings)?
                 }
-                "displayColor" => {
-                    let colors = self.shaping.colors;
-                    let from = primvar.color_space.as_deref().unwrap_or(LIN_REC709);
-                    if let Err(e) = colors.convert_f32(from, colors.working(), &mut picked) {
-                        self.warnings
-                            .push(format!("instances' displayColor: {e}; kept as it is"));
-                    }
-                    (names::CD, Meaning::Color)
+                (name, other) => {
+                    let other = other.token();
+                    self.warnings.push(format!(
+                        "{path}: primvar {name} is {other}, not one value an instance; left out"
+                    ));
+                    attributes
                 }
-                _ => continue,
             };
-            attributes =
-                attributes.with(Domain::Instance, name, Attribute::tuples(picked, meaning)?)?;
         }
         Ok(attributes)
+    }
+
+    /// `attributes` with a point instancer's `velocities` as the instances'
+    /// `v`, of the instances `kept`, in the project's space.
+    fn velocities(
+        &mut self,
+        attributes: Attributes,
+        primvar: &Primvar,
+        kept: &[usize],
+    ) -> Result<Attributes, Error> {
+        let Some(crate::usd::sdf::Array::Vec3f(values)) = primvar.values.as_array() else {
+            return Ok(attributes);
+        };
+        let space = self.shaping.space;
+        let scale = space.scale();
+        let moved: Option<Vec<[f32; 3]>> = (kept.iter())
+            .map(|&i| {
+                let v = values.get(i)?.map(f64::from);
+                let d = space.direction(Vec3::new(v[0], v[1], v[2])) * scale;
+                Some([d.x, d.y, d.z].map(|c| c as f32))
+            })
+            .collect();
+        let Some(moved) = moved else {
+            self.warnings
+                .push("a point instancer's velocities aren't one an instance; left out".into());
+            return Ok(attributes);
+        };
+        attributes.with(
+            Domain::Instance,
+            names::V,
+            Attribute::tuples(moved, Meaning::Vector)?,
+        )
     }
 
     /// Instances whose nesting is too deep are left out, said.

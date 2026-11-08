@@ -31,7 +31,7 @@ pub struct Instancer {
     pub invisible_ids: Vec<i64>,
     /// `inactiveIds` metadata: instances left out, by id (by index).
     pub inactive_ids: Vec<i64>,
-    /// Per-instance primvars in name order.
+    /// Per-instance primvars in name order, `velocities` among them.
     pub primvars: Vec<Primvar>,
 }
 
@@ -232,7 +232,7 @@ pub(super) fn read(
         ids,
         invisible_ids: invisible_ids.unwrap_or_default(),
         inactive_ids,
-        primvars: read_primvars(layer, prim, &[], time),
+        primvars: read_primvars(layer, prim, &["velocities"], time),
     })
 }
 

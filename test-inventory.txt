@@ -8,6 +8,11 @@ kinogaki-usd/format test export::colors_are_written_in_linear_rec709_as_other_ap
 kinogaki-usd/format test export::curves_come_back_of_their_basis
 kinogaki-usd/format test export::lights_cameras_and_a_domes_image_come_back
 kinogaki-usd/format test export::polygons_come_back_where_they_were_in_any_units
+kinogaki-usd/format test geometry::a_meshs_subsets_come_back_once_with_its_names_and_parts
+kinogaki-usd/format test geometry::curves_keep_their_attributes_materials_and_closing
+kinogaki-usd/format test geometry::no_gprim_holds_prims
+kinogaki-usd/format test geometry::points_keep_their_attributes
+kinogaki-usd/format test geometry::prims_carry_model_kinds
 kinogaki-usd/format test hostile::a_dictionary_shared_by_its_entries_decodes_once
 kinogaki-usd/format test hostile::a_layer_named_many_ways_is_read_once
 kinogaki-usd/format test hostile::a_path_tree_too_deep_is_refused_on_the_import_stack
@@ -41,7 +46,10 @@ kinogaki-usd/format test instances::a_material_map_shows_a_prototype_written_in_
 kinogaki-usd/format test instances::a_prototypes_invisible_prims_and_other_families_bindings_show_nothing
 kinogaki-usd/format test instances::a_shear_leaves_its_instances_instanceable_prims_of_their_own
 kinogaki-usd/format test instances::one_instance_and_shared_values_are_instanceable_prims_of_one_prototype
+kinogaki-usd/format test instances::per_instance_attributes_and_the_instancers_extent_come_back
 kinogaki-usd/format test instances::several_instances_are_a_point_instancer_of_one_prototype_written_once
+kinogaki-usd/format test libraries::libraries_export_as_scopes_where_they_are_and_import_back
+kinogaki-usd/format test libraries::scopes_of_materials_import_as_libraries_where_they_are
 kinogaki-usd/format test lights::camera_visibility_reads_ours_then_the_renderers_and_is_off_without
 kinogaki-usd/format test lights::every_intrinsic_kind_reads_as_its_standard_shape
 kinogaki-usd/format test lights::every_kind_and_api_writes_back_as_usdlux_writes_them
@@ -158,6 +166,7 @@ kinogaki-usd/model test scene::shares_the_layers_columns
 kinogaki-usd/model test shade::a_connection_leaving_its_material_is_said
 kinogaki-usd/model test shade::a_material_holds_every_render_context_as_authored
 kinogaki-usd/model test shade::bindings_follow_usd_shade
+kinogaki-usd/model test shade::collection_bindings_bind_their_members
 kinogaki-usd/model test shade::connections_resolve_to_nodes_and_node_graph_interfaces
 kinogaki-usd/model test shade::networks_write_and_read_back_unchanged
 kinogaki-usd/model test shade::referenced_materialx_documents_compose_as_usdmtlx_lays_them_out

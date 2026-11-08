@@ -63,7 +63,8 @@ fn named(read: &Imported, value: &Instances) -> Vec<Option<String>> {
     (0..value.len())
         .map(|i| {
             let key = text.and_then(|t| t.get(i))?;
-            let found = materials(read).materials.iter().find(|m| m.key == key);
+            let held = materials(read);
+            let found = held.materials.iter().find(|m| m.key == key);
             found.map(|m| m.name.clone())
         })
         .collect()
@@ -72,6 +73,60 @@ fn named(read: &Imported, value: &Instances) -> Vec<Option<String>> {
 /// The layer written at `path`, as text.
 fn layer(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap()
+}
+
+/// A point instancer holds every attribute of one value an instance as a
+/// primvar (its `v` its `velocities`) and reads each back; its `extent` is
+/// its prototype's box where the instances place it.
+#[test]
+fn per_instance_attributes_and_the_instancers_extent_come_back() {
+    let dir = Scratch::new("instancer-primvars");
+    let path = dir.join("row.usda");
+    let leaf = standard::geometry().wrap(square(""));
+    let reals = |values: Vec<f32>| Attribute::tuples(values, Meaning::None).unwrap();
+    let attributes = Attributes::new()
+        .with(Domain::Instance, names::PSCALE, reals(vec![1.0, 2.0, 3.0]))
+        .and_then(|a| a.with(Domain::Instance, "heat", reals(vec![0.5, 0.25, 0.125])))
+        .and_then(|a| {
+            let v = Attribute::tuples(vec![[1.0_f32, 0.0, 0.0]; 3], Meaning::Vector)?;
+            a.with(Domain::Instance, names::V, v)
+        })
+        .and_then(|a| {
+            let tag = Attribute::text(Text::from_strs(["a", "b", "c"]));
+            a.with(Domain::Instance, "tag", tag)
+        })
+        .unwrap();
+    let value = Instances::new(vec![leaf], row(3), None, attributes.clone()).unwrap();
+    let items = [FileItem::top("Row", standard::instances().wrap(value))];
+    let said = write_file(&path, &items, metres());
+    assert!(said.is_empty(), "{said:?}");
+    let text = layer(&path);
+    for line in [
+        "float[] primvars:pscale = [1, 2, 3]",
+        "float[] primvars:heat = [0.5, 0.25, 0.125]",
+        "string[] primvars:tag = [\"a\", \"b\", \"c\"]",
+        "vector3f[] velocities = [(1, 0, 0), (1, 0, 0), (1, 0, 0)]",
+        "float3[] extent = [(0, 0, 0), (3, 1, 0)]",
+    ] {
+        assert!(text.contains(line), "{line} in\n{text}");
+    }
+    let read = read_file(&path, metres(), false);
+    let back = instances(&read, "Row").attributes();
+    for name in [names::PSCALE, "heat"] {
+        let got = back.tuples::<f32>(Domain::Instance, name);
+        assert_eq!(
+            got,
+            attributes.tuples::<f32>(Domain::Instance, name),
+            "{name}"
+        );
+    }
+    let v = back.tuples::<[f32; 3]>(Domain::Instance, names::V);
+    assert_eq!(v, Some(&[[1.0, 0.0, 0.0]; 3][..]));
+    let tags = back.text(Domain::Instance, "tag").unwrap();
+    assert_eq!(
+        (0..3).map(|i| tags.get(i).unwrap()).collect::<Vec<_>>(),
+        ["a", "b", "c"]
+    );
 }
 
 #[test]
@@ -171,7 +226,8 @@ fn a_material_map_shows_a_prototype_written_in_its_materials() {
                 .attributes()
                 .text(Domain::Primitive, names::MATERIAL);
             let key = key.unwrap().get(0).unwrap();
-            let found = materials(&read).materials.iter().find(|m| m.key == key);
+            let held = materials(&read);
+            let found = held.materials.iter().find(|m| m.key == key);
             found.unwrap().name.clone()
         })
         .collect();

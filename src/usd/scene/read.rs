@@ -1,19 +1,23 @@
 //! A composed stage read as a [`Scene`]: the stage flattened with each
 //! prototype's prims beneath its source instance (a single layer is read as
-//! it is), then walked prim by prim, accumulating material bindings. Every
+//! it is), then walked prim by prim, each prim's material resolved as
+//! UsdShade resolves it ([`super::bindings`]). Every
 //! prim, prototypes' too, is at a path of the stage, so a scene names no
 //! prim the stage lacks.
 //!
 //! Which prims load: defined, active prims (`over`s too within
 //! prototypes), of purpose `default` and `render` (`proxy` and `guide` when
 //! asked). Invisible prims load, marked. A group that holds nothing loads
-//! as nothing. Instances show shared prototypes (the flattening says which
+//! as nothing, but one holding Materials outside prototypes loads, so a
+//! Material's parent prim is a node wherever it shows. Instances show
+//! shared prototypes (the flattening says which
 //! prims are instances, and where each one's prototype is), and a point
 //! instancer's prototypes are its own (not drawn in place beneath it).
 //! The scene's warnings start with what composing the stage reported.
 
 use std::collections::HashSet;
 
+use super::bindings::{self, Binding, Level, Memberships};
 use super::light::LightKind;
 use super::values::{Time, token_at};
 use super::xform::local_transform;
@@ -85,14 +89,11 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
         materials: Vec::new(),
         material_at: PathMap::default(),
         warnings: Vec::new(),
-        collections_said: false,
+        levels: Vec::new(),
+        memberships: Memberships::default(),
     };
     let mut nodes = Vec::new();
-    let top = Inherited {
-        binding: None,
-        depth: 0,
-    };
-    walker.children(&Path::absolute_root(), None, top, false, &mut nodes);
+    walker.children(&Path::absolute_root(), None, 0, false, &mut nodes);
     walker.materials_everywhere(&Path::absolute_root(), 0);
     stage.check()?;
     let Walker {
@@ -139,21 +140,6 @@ fn asset_source(stage: &mut Stage, path: &str) -> AssetSource {
     }
 }
 
-/// What a prim takes from its ancestors.
-#[derive(Clone, Copy)]
-struct Inherited {
-    binding: Option<Binding>,
-    depth: usize,
-}
-
-/// A material binding: the material, and whether it overrides the
-/// bindings of descendants (`bindMaterialAs = "strongerThanDescendants"`).
-#[derive(Clone, Copy)]
-struct Binding {
-    material: usize,
-    stronger: bool,
-}
-
 /// The asset paths a scene names, anchored, each once in the order met,
 /// with the path first authored for each.
 struct AssetPaths<'a> {
@@ -193,7 +179,10 @@ struct Walker<'a> {
     materials: Vec<Material>,
     material_at: PathMap<Option<usize>>,
     warnings: Vec<String>,
-    collections_said: bool,
+    /// The bindings on the prims being walked, outermost first (fresh in
+    /// a prototype, which nothing outside binds into).
+    levels: Vec<Level>,
+    memberships: Memberships,
 }
 
 impl Walker<'_> {
@@ -203,59 +192,61 @@ impl Walker<'_> {
         }
     }
 
-    /// The children of `prim`, each walked into `out` under `parent`.
+    /// The children of `prim`, each walked into `out` under `parent`;
+    /// whether a Material is among them.
     fn children(
         &mut self,
         prim: &Path,
         parent: Option<usize>,
-        inherited: Inherited,
+        depth: usize,
         prototype: bool,
         out: &mut Vec<Node>,
-    ) {
+    ) -> bool {
         let Some(spec) = self.layer.spec(prim) else {
-            return;
+            return false;
         };
+        let mut materials = false;
         for name in spec.tokens(field::PRIM_CHILDREN) {
-            self.prim(&prim.child(name.clone()), parent, inherited, prototype, out);
+            let child = prim.child(name.clone());
+            materials |= self.prim(&child, parent, depth, prototype, out);
         }
+        materials
     }
 
     /// The prim at `path` and its descendants, into `out` under `parent`;
-    /// `prototype`: within a prototype, where `over`s define prims.
+    /// `prototype`: within a prototype, where `over`s define prims. Whether
+    /// it is a Material.
     fn prim(
         &mut self,
         path: &Path,
         parent: Option<usize>,
-        inherited: Inherited,
+        depth: usize,
         prototype: bool,
         out: &mut Vec<Node>,
-    ) {
+    ) -> bool {
         if self.budget.cancel().is_cancelled() {
-            return;
+            return false;
         }
-        if inherited.depth > self.budget.limits().depth {
+        if depth > self.budget.limits().depth {
             self.warn(format!("{path}: prims nest too deeply; left out"));
-            return;
+            return false;
         }
         let Some(spec) = self.layer.spec(path) else {
-            return;
+            return false;
         };
         let specifier = spec.get(field::SPECIFIER).and_then(Value::as_specifier);
         let defined =
             specifier == Some(Specifier::Def) || (prototype && specifier == Some(Specifier::Over));
         if !defined || spec.get(field::ACTIVE).and_then(Value::as_bool) == Some(false) {
-            return;
+            return false;
         }
         let type_name = (spec.get(field::TYPE_NAME))
             .and_then(Value::as_token)
             .cloned()
             .unwrap_or_default();
         match type_name.as_str() {
-            "Material" => {
-                self.material(path);
-                return;
-            }
-            "GeomSubset" | "Shader" | "NodeGraph" => return,
+            "Material" => return self.material(path).is_some(),
+            "GeomSubset" | "Shader" | "NodeGraph" => return false,
             _ => {}
         }
         let loads = match token_at(self.layer, path, "purpose", "default").as_str() {
@@ -265,20 +256,14 @@ impl Walker<'_> {
             _ => false,
         };
         if !loads {
-            return;
+            return false;
         }
-        let own = self.binding(path);
-        let binding = match (inherited.binding, own) {
-            (Some(up), _) if up.stronger => Some(up),
-            (_, Some(own)) => Some(own),
-            (up, None) => up,
-        };
-        let here = Inherited {
-            binding,
-            depth: inherited.depth + 1,
-        };
-        let kind = self.kind(path, &type_name, here.depth);
-        let instance = self.instance(path, here.depth);
+        let level = self.level(path);
+        self.levels.push(level);
+        let binding = bindings::resolve(&self.levels, path);
+        let depth = depth + 1;
+        let kind = self.kind(path, &type_name, depth);
+        let instance = self.instance(path, depth);
         let local = local_transform(self.layer, path, self.time);
         let shows_material = instance.is_some()
             || !matches!(
@@ -290,6 +275,7 @@ impl Walker<'_> {
             name: path.name_token(),
             parent,
             type_name,
+            model: (spec.get(field::KIND).and_then(Value::as_token).cloned()).unwrap_or_default(),
             transform: local.matrix,
             resets_transform: local.resets,
             visible: token_at(self.layer, path, "visibility", "inherited").as_str() != "invisible",
@@ -300,15 +286,18 @@ impl Walker<'_> {
         });
         // A point instancer's children are its prototypes, and an instance's
         // its prototype's prims: neither is drawn in place.
-        if !matches!(out[index].kind, NodeKind::Instancer(_)) && out[index].instance.is_none() {
-            self.children(path, Some(index), here, prototype, out);
-        }
+        let walks =
+            !matches!(out[index].kind, NodeKind::Instancer(_)) && out[index].instance.is_none();
+        let materials = walks && self.children(path, Some(index), depth, prototype, out);
+        self.levels.pop();
         let empty = matches!(out[index].kind, NodeKind::Group)
             && out[index].instance.is_none()
-            && out.len() == index + 1;
+            && out.len() == index + 1
+            && (prototype || !materials);
         if empty {
             out.truncate(index);
         }
+        false
     }
 
     /// What the prim at `path` of type `type_name` holds; a group when it
@@ -317,12 +306,17 @@ impl Walker<'_> {
         let (layer, time) = (self.layer, self.time);
         let read = match type_name.as_str() {
             "Mesh" => mesh::read(layer, path, time, &mut self.warnings).map(|mut mesh| {
-                // A subset's binding counts in the materialBind family alone
-                // (UsdShadeMaterialBindingAPI, materialBindingAPI.h:867-876).
+                // A subset's material is resolved as a prim's beneath the
+                // mesh, in the materialBind family alone
+                // (UsdShadeMaterialBindingAPI, materialBindingAPI.h:867-876):
+                // a stronger binding above beats its own.
                 for subset in &mut mesh.subsets {
                     if subset.family.as_str() == "materialBind" {
-                        let own = self.binding(&path.child(subset.name.clone()));
-                        subset.material = own.map(|b| b.material);
+                        let at = path.child(subset.name.clone());
+                        let level = self.level(&at);
+                        self.levels.push(level);
+                        subset.material = bindings::resolve(&self.levels, &at).map(|b| b.material);
+                        self.levels.pop();
                     }
                 }
                 NodeKind::Mesh(Box::new(mesh))
@@ -425,60 +419,68 @@ impl Walker<'_> {
         };
         self.prototypes.push(Prototype {
             root,
+            model: Token::empty(),
             nodes: Vec::new(),
         });
         self.prototype_at[usize::from(whole)].insert(source.clone(), index);
         self.reading.push(index);
         let mut nodes = Vec::new();
-        let top = Inherited {
-            binding: None,
-            depth,
-        };
+        let outside = std::mem::take(&mut self.levels);
         if whole {
-            self.prim(source, None, top, true, &mut nodes);
+            self.prim(source, None, depth, true, &mut nodes);
         } else {
-            self.children(source, None, top, true, &mut nodes);
+            self.children(source, None, depth, true, &mut nodes);
         }
+        self.levels = outside;
         self.reading.pop();
         self.prototypes[index].nodes = nodes;
         Ok(index)
     }
 
-    /// The material bound to the prim at `path` itself: its full-purpose
-    /// binding, else its all-purpose one.
-    fn binding(&mut self, path: &Path) -> Option<Binding> {
-        if !self.collections_said && self.binds_collections(path) {
-            self.collections_said = true;
-            self.warn(format!(
-                "{path}: collection-based material bindings are not read"
-            ));
-        }
-        for name in ["material:binding:full", "material:binding"] {
-            let relationship = path.property(name);
-            let Some(spec) = self.layer.spec(&relationship) else {
-                continue;
-            };
-            let Some(Value::PathListOp(list)) = spec.get(field::TARGET_PATHS) else {
-                continue;
-            };
-            let Some(target) = list.applied().into_iter().next() else {
-                continue;
-            };
-            let stronger = matches!(spec.get("bindMaterialAs"), Some(Value::Token(t)) if t.as_str() == "strongerThanDescendants");
-            let material = self.material(&target)?;
-            return Some(Binding { material, stronger });
-        }
-        None
-    }
-
-    fn binds_collections(&self, path: &Path) -> bool {
-        let properties = self
-            .layer
+    /// The bindings authored on the prim at `path`: its direct ones and
+    /// its collection-based ones in property order, of the full purpose
+    /// and of all purposes; a binding naming no Material counts for none.
+    fn level(&mut self, path: &Path) -> Level {
+        let mut level = Level::default();
+        let layer = self.layer;
+        let properties = layer
             .spec(path)
-            .map_or(&[][..], |spec| spec.tokens(field::PROPERTIES));
-        properties
-            .iter()
-            .any(|p| p.starts_with("material:binding:collection:"))
+            .map_or(&[][..], |s| s.tokens(field::PROPERTIES));
+        for property in properties {
+            let Some((purpose, collection)) = bindings::binding_name(property) else {
+                continue;
+            };
+            let relationship = path.property(property.clone());
+            let targets = match layer.get(&relationship, field::TARGET_PATHS) {
+                Some(Value::PathListOp(list)) => list.applied(),
+                _ => continue,
+            };
+            let stronger = bindings::stronger(layer, &relationship);
+            match collection {
+                false if level.direct[purpose].is_none() => {
+                    let material = targets.first().and_then(|t| self.material(t));
+                    level.direct[purpose] = material.map(|material| Binding { material, stronger });
+                }
+                false => {}
+                true => {
+                    // Two targets: the collection and the material.
+                    let (sets, looks): (Vec<Path>, Vec<Path>) =
+                        targets.into_iter().partition(|t| t.is_property());
+                    let ([set], [look]) = (&sets[..], &looks[..]) else {
+                        self.warn(format!(
+                            "{relationship}: not one collection and one material"
+                        ));
+                        continue;
+                    };
+                    let Some(material) = self.material(look) else {
+                        continue;
+                    };
+                    let members = self.memberships.of(layer, set, &mut self.warnings);
+                    level.collections[purpose].push((members, Binding { material, stronger }));
+                }
+            }
+        }
+        level
     }
 
     /// The Material at `path`, read once; none when no Material is there.

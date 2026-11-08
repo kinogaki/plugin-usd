@@ -1,15 +1,16 @@
 //! Geometry authored as its prims: meshes with their topology, `extent`,
 //! primvars, subdivision tags and GeomSubsets; implicit shapes; curves;
-//! points; point instancers. Values are written in the types they were
-//! read in.
+//! points; point instancers with their `extent` (their prototypes' bounds
+//! where the instances place them). Values are written in the types they
+//! were read in.
 
 use std::sync::Arc;
 
 use super::Writer;
 use crate::usd::error::{Error, Result};
 use crate::usd::scene::{
-    Author, CurveBasis, CurveForm, CurveWrap, Curves, Instancer, Mesh, Points, Primvar, Shape,
-    ShapeForm, SubsetElement,
+    Author, CurveBasis, CurveForm, CurveWrap, Curves, Instancer, Matrix4d, Mesh, Node, NodeKind,
+    Points, Primvar, Shape, ShapeForm, SubsetElement,
 };
 use crate::usd::sdf::{Array, Half, ListOp, Path, Token, Value};
 
@@ -23,18 +24,30 @@ fn token(text: &str) -> Value {
     Value::Token(Token::new(text))
 }
 
+/// A box: its lowest and highest corners.
+type Bounds = [[f64; 3]; 2];
+
+/// The box holding `points`; none for no points.
+fn bounds_of(points: impl IntoIterator<Item = [f64; 3]>) -> Option<Bounds> {
+    points.into_iter().fold(None, |held, p| {
+        let [low, high] = held.unwrap_or([p, p]);
+        let low = [0, 1, 2].map(|a| low[a].min(p[a]));
+        let high = [0, 1, 2].map(|a| high[a].max(p[a]));
+        Some([low, high])
+    })
+}
+
+/// An `extent` of `bounds`.
+fn extent(author: &mut Author, path: &Path, [low, high]: Bounds) {
+    let corners = vec![low.map(|c| c as f32), high.map(|c| c as f32)];
+    let extent = Value::Array(Array::Vec3f(Arc::new(corners)));
+    author.attribute(path, "extent", "float3[]", extent, false);
+}
+
 /// `points` (as `point3f[]`) and their `extent`.
 pub(super) fn points(author: &mut Author, path: &Path, points: &Arc<Vec<[f32; 3]>>) {
-    if let Some(first) = points.first() {
-        let (mut low, mut high) = (*first, *first);
-        for p in points.iter() {
-            for axis in 0..3 {
-                low[axis] = low[axis].min(p[axis]);
-                high[axis] = high[axis].max(p[axis]);
-            }
-        }
-        let extent = Value::Array(Array::Vec3f(Arc::new(vec![low, high])));
-        author.attribute(path, "extent", "float3[]", extent, false);
+    if let Some(bounds) = bounds_of(points.iter().map(|p| p.map(f64::from))) {
+        extent(author, path, bounds);
     }
     let value = Value::Array(Array::Vec3f(points.clone()));
     author.attribute(path, "points", "point3f[]", value, false);
@@ -307,7 +320,9 @@ impl Writer<'_> {
     }
 
     /// Author `instancer` at `path` as a PointInstancer, its prototypes
-    /// beneath it in `Prototypes`.
+    /// beneath it in a `Prototypes` scope, as Houdini writes them (a
+    /// `class` there, the schema's advice, makes Karma draw none of its
+    /// instances).
     pub(super) fn instancer(
         &self,
         author: &mut Author,
@@ -368,6 +383,9 @@ impl Writer<'_> {
             let value = Value::Array(Array::Vec3f(scales.clone()));
             author.attribute(path, "scales", "float3[]", value, false);
         }
+        if let Some(bounds) = self.instancer_bounds(instancer, depth) {
+            extent(author, path, bounds);
+        }
         if let Some(ids) = &instancer.ids {
             author.attribute(
                 path,
@@ -387,4 +405,83 @@ impl Writer<'_> {
         }
         primvars(author, path, &instancer.primvars)
     }
+
+    /// The box `instancer`'s instances fill: each prototype's bounds where
+    /// its instances place it; none when they show nothing.
+    fn instancer_bounds(&self, instancer: &Instancer, depth: usize) -> Option<Bounds> {
+        if depth > super::MOST_NESTING {
+            return None;
+        }
+        let prototypes: Vec<Option<Bounds>> = (instancer.prototypes.iter())
+            .map(|&p| {
+                self.scene
+                    .prototypes
+                    .get(p)
+                    .and_then(|p| self.nodes_bounds(&p.nodes, depth))
+            })
+            .collect();
+        let placed = instancer
+            .transforms()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, m)| {
+                let index = usize::try_from(instancer.proto_indices[i]).ok()?;
+                Some(
+                    corners(prototypes.get(index).copied().flatten()?)
+                        .map(|c| m.transform_point(c)),
+                )
+            });
+        bounds_of(placed.flatten())
+    }
+
+    /// The box `nodes` (parents first) fill where they place their
+    /// geometry, instances and point instancers.
+    fn nodes_bounds(&self, nodes: &[Node], depth: usize) -> Option<Bounds> {
+        let mut worlds: Vec<Matrix4d> = Vec::with_capacity(nodes.len());
+        let mut held: Vec<[f64; 3]> = Vec::new();
+        for node in nodes {
+            let above = node
+                .parent
+                .and_then(|p| worlds.get(p))
+                .filter(|_| !node.resets_transform);
+            let world = above.map_or(node.transform, |a| node.transform.times(a));
+            worlds.push(world);
+            let own = match &node.kind {
+                NodeKind::Mesh(mesh) => bounds_of(mesh.points.iter().map(|p| p.map(f64::from))),
+                NodeKind::Curves(curves) => {
+                    bounds_of(curves.points.iter().map(|p| p.map(f64::from)))
+                }
+                NodeKind::Points(points) => {
+                    bounds_of(points.points.iter().map(|p| p.map(f64::from)))
+                }
+                NodeKind::Shape(shape) => {
+                    bounds_of(shape.mesh().points.iter().map(|p| p.map(f64::from)))
+                }
+                NodeKind::Instancer(nested) => self.instancer_bounds(nested, depth + 1),
+                NodeKind::Group | NodeKind::Camera(_) | NodeKind::Light(_) => None,
+            };
+            let shown = (node.instance)
+                .and_then(|p| self.scene.prototypes.get(p))
+                .filter(|_| depth < super::MOST_NESTING)
+                .and_then(|p| self.nodes_bounds(&p.nodes, depth + 1));
+            for bounds in own.into_iter().chain(shown) {
+                held.extend(corners(bounds).map(|c| world.transform_point(c)));
+            }
+        }
+        bounds_of(held)
+    }
+}
+
+/// The eight corners of `bounds`.
+fn corners([low, high]: Bounds) -> [[f64; 3]; 8] {
+    std::array::from_fn(|k| {
+        let pick = |axis: usize| {
+            if k >> axis & 1 == 0 {
+                low[axis]
+            } else {
+                high[axis]
+            }
+        };
+        [pick(0), pick(1), pick(2)]
+    })
 }

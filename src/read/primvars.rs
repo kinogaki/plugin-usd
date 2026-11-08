@@ -28,9 +28,9 @@ use kinogaki_studio_api::geometry::{
 
 use super::geometry::Shaping;
 
-/// Where a primvar's elements land: the faces kept (by their index in the
-/// file) and each kept corner's corner in the file, `None` when every one
-/// is kept in order.
+/// Where a primvar's elements land: the faces (or a point instancer's
+/// instances) kept, by their index in the file, and each kept corner's
+/// corner in the file, `None` when every one is kept in order.
 pub(super) struct Spread<'a> {
     pub primitives: Option<&'a [u32]>,
     pub corners: Option<&'a [u32]>,
@@ -40,12 +40,26 @@ pub(super) struct Spread<'a> {
 }
 
 impl Spread<'_> {
+    /// How many elements `domain` holds.
+    fn count(&self, domain: Domain) -> usize {
+        match domain {
+            Domain::Point => self.points,
+            Domain::Primitive | Domain::Instance => {
+                self.primitives.map_or(self.faces, <[u32]>::len)
+            }
+            Domain::Vertex => self.corners.map_or(self.vertices, <[u32]>::len),
+            _ => 1,
+        }
+    }
+
     /// Each element of `domain` by its element in the file.
     fn from(&self, domain: Domain) -> Box<dyn Iterator<Item = usize> + '_> {
         match (domain, self.primitives, self.corners) {
-            (Domain::Primitive, Some(kept), _) => Box::new(kept.iter().map(|&f| f as usize)),
+            (Domain::Primitive | Domain::Instance, Some(kept), _) => {
+                Box::new(kept.iter().map(|&f| f as usize))
+            }
             (Domain::Vertex, _, Some(corners)) => Box::new(corners.iter().map(|&c| c as usize)),
-            (Domain::Primitive, None, _) => Box::new(0..self.faces),
+            (Domain::Primitive | Domain::Instance, None, _) => Box::new(0..self.faces),
             (Domain::Vertex, _, None) => Box::new(0..self.vertices),
             (Domain::Point, ..) => Box::new(0..self.points),
             _ => Box::new(0..1),
@@ -63,7 +77,7 @@ impl Spread<'_> {
         indices: Option<&Vec<i32>>,
     ) -> Vec<T> {
         let whole = match domain {
-            Domain::Primitive => self.primitives.is_none(),
+            Domain::Primitive | Domain::Instance => self.primitives.is_none(),
             Domain::Vertex => self.corners.is_none(),
             _ => true,
         };
@@ -89,8 +103,9 @@ pub(super) fn domain(interpolation: Interpolation) -> Domain {
     }
 }
 
-/// `attributes` with `primvar` of the prim at `prim`, its elements taken as
-/// `spread` says; a primvar no attribute holds is left out, said.
+/// `attributes` with `primvar` of the prim at `prim`, on the domain its
+/// interpolation names, its elements taken as `spread` says; a primvar no
+/// attribute holds is left out, said.
 pub(super) fn attribute(
     attributes: Attributes,
     primvar: &Primvar,
@@ -99,8 +114,21 @@ pub(super) fn attribute(
     prim: &Path,
     warnings: &mut Vec<String>,
 ) -> Result<Attributes, Error> {
-    let name = names::attribute(&primvar.name);
     let domain = domain(primvar.interpolation);
+    attribute_on(attributes, (primvar, domain), spread, cx, prim, warnings)
+}
+
+/// [`attribute`] onto `domain`: a point instancer's per-instance primvar
+/// onto the Instance domain.
+pub(super) fn attribute_on(
+    attributes: Attributes,
+    (primvar, domain): (&Primvar, Domain),
+    spread: &Spread<'_>,
+    cx: &Shaping<'_>,
+    prim: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Attributes, Error> {
+    let name = names::attribute(&primvar.name);
     let read = Read {
         primvar,
         domain,
@@ -109,10 +137,20 @@ pub(super) fn attribute(
         prim,
     };
     let why = match read.values(name, warnings) {
-        Ok((ty, values)) => match Attribute::new(ty, values) {
-            Ok(attribute) => return attributes.with(domain, name, attribute),
-            Err(e) => e.message().to_owned(),
-        },
+        Ok((ty, values)) => {
+            let items = match ty.storage {
+                Storage::Text => values.len(),
+                _ => values.len() / usize::from(ty.width),
+            };
+            let elements = spread.count(domain);
+            match Attribute::new(ty, values) {
+                Ok(_) if items != elements => {
+                    format!("holds {items} values for {elements} elements")
+                }
+                Ok(attribute) => return attributes.with(domain, name, attribute),
+                Err(e) => e.message().to_owned(),
+            }
+        }
         Err(why) => why,
     };
     let primvar = &primvar.name;

@@ -3,8 +3,9 @@
 //!
 //! The layer holds the stage metadata (`defaultPrim` the first top prim,
 //! `upAxis`, `metersPerUnit`), each node as its prim at the path its names
-//! give, placed by its local transform (`!resetXformStack!` kept), hidden
-//! with `visibility = invisible`, bound with `material:binding`
+//! give, of its model kind, placed by its local transform
+//! (`!resetXformStack!` kept), hidden with `visibility = invisible`, bound
+//! with `material:binding`
 //! (`bindMaterialAs = "strongerThanDescendants"` where it is stronger);
 //! then the prototypes instances show, then the materials.
 //!
@@ -86,7 +87,9 @@ fn author_with(scene: &Scene, asset: &dyn Fn(&Token) -> Token) -> Result<LayerDa
     for (index, path) in &stored.prims {
         author.class(&stored.holder);
         author.prim(path, "Xform");
-        writer.nodes(&mut author, path, &scene.prototypes[*index].nodes, 0)?;
+        let prototype = &scene.prototypes[*index];
+        model(&mut author, path, &prototype.model);
+        writer.nodes(&mut author, path, &prototype.nodes, 0)?;
     }
     for material in &scene.materials {
         shade::write(&mut author, material, asset)?;
@@ -127,7 +130,8 @@ pub fn write_file(scene: &Scene, path: impl AsRef<FilePath>) -> Result<()> {
 
 /// Each asset that has bytes (held, or a picture on disk) named
 /// `<folder>/<its file name>`, names kept unique (`<stem>_1.<extension>`…,
-/// counted per name, case ignored): the names by asset path, and the files.
+/// counted per name, case ignored): the paths written for them by asset
+/// path (`./<folder>/…`), and the files.
 #[allow(clippy::type_complexity)]
 fn packaged(
     assets: &[Asset],
@@ -143,7 +147,8 @@ fn packaged(
             AssetSource::File(_) | AssetSource::Missing => continue,
         };
         let name = taken.take(&format!("{folder}/{}", file_name(&asset.path)));
-        names.insert(asset.path.clone(), Token::new(&name));
+        // File-relative, as the usdz specification encourages.
+        names.insert(asset.path.clone(), Token::new(&format!("./{name}")));
         files.push((name, bytes));
     }
     Ok((names, files))
@@ -304,6 +309,7 @@ impl Writer<'_> {
             }
             NodeKind::Instancer(instancer) => self.instancer(author, path, instancer, depth)?,
         }
+        model(author, path, &node.model);
         placement(author, path, &node.transform, node.resets_transform);
         if !node.visible {
             let hidden = Value::Token(Token::new("invisible"));
@@ -359,6 +365,13 @@ impl Writer<'_> {
             );
         }
         Ok(())
+    }
+}
+
+/// A prim's model kind, when it has one.
+fn model(author: &mut Author, path: &Path, kind: &Token) {
+    if !kind.is_empty() {
+        author.prim_metadata(path, "kind", Value::Token(kind.clone()));
     }
 }
 

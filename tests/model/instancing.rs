@@ -53,7 +53,8 @@ fn instanceable_prims_share_one_prototype() {
             "/Asset/Part",
             "/Shelf",
             "/Shelf/One",
-            "/Shelf/Two"
+            "/Shelf/Two",
+            "/Looks"
         ]
     );
     let (one, two) = (node(&scene, "/Shelf/One"), node(&scene, "/Shelf/Two"));
@@ -93,7 +94,8 @@ fn instances_write_as_instances_of_their_prototype_written_once() {
                 "/Asset/Part",
                 "/Shelf",
                 "/Shelf/One",
-                "/Shelf/Two"
+                "/Shelf/Two",
+                "/Looks"
             ]
         );
         let (one, two) = (node(&again, "/Shelf/One"), node(&again, "/Shelf/Two"));

@@ -17,6 +17,7 @@
 
 mod assets;
 mod author;
+mod bindings;
 mod camera;
 mod curves;
 mod instancer;
@@ -121,6 +122,9 @@ pub struct Node {
     pub parent: Option<usize>,
     /// Its schema type as authored (`Xform`, `Mesh`, `Scope`, …).
     pub type_name: Token,
+    /// Its model kind (`kind` metadata: `assembly`, `group`, `component`,
+    /// …); empty for none.
+    pub model: Token,
     /// Its transform relative to its parent (row vectors).
     pub transform: Matrix4d,
     /// Whether it ignores its parents' transforms (`!resetXformStack!`).
@@ -152,6 +156,7 @@ impl Node {
             name: Token::new(name),
             parent,
             type_name: Token::new("Xform"),
+            model: Token::empty(),
             transform: Matrix4d::IDENTITY,
             resets_transform: false,
             visible: true,
@@ -194,6 +199,10 @@ pub struct Prototype {
     /// its prims are read from (an instanceable prim's prototype), or the
     /// point instancer it is a prototype of. Writing chooses its own.
     pub root: Path,
+    /// The model kind of the prim it is written beneath when instances
+    /// show it (which their prims take through the reference); empty for
+    /// none, and when read.
+    pub model: Token,
     /// Its prims, parents before children; the ones at the top are placed
     /// by what shows the prototype.
     pub nodes: Vec<Node>,

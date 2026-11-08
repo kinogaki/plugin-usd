@@ -107,7 +107,7 @@ fn a_scene_writes_as_a_usdz_with_its_assets_under_textures() {
         ["lamp copy.usdc", "textures/paper.png", "textures/sky.exr"]
     );
     assert_eq!(&package.entry("textures/paper.png").unwrap()[..], PNG);
-    // Read back, the material names the packaged file.
+    // Read back, the material names the packaged file, file-relative.
     let again = scene_of(&written);
     let paper = again.materials[0]
         .nodes
@@ -119,7 +119,7 @@ fn a_scene_writes_as_a_usdz_with_its_assets_under_textures() {
     };
     assert_eq!(
         again.asset(file).unwrap().authored.as_str(),
-        "textures/paper.png"
+        "./textures/paper.png"
     );
     assert_eq!(&held(again.asset(file).unwrap())[..], PNG);
     assert_eq!(again.nodes, scene_of(&std::fs::read(&path).unwrap()).nodes);

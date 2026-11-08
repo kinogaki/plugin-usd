@@ -30,12 +30,17 @@ fn world(scene: &kinogaki_usd::usd::scene::Scene, path: &str) -> Matrix4d {
 fn reads_the_tree_with_local_transforms_and_units() {
     let scene = fixture("cube.usda");
     assert_eq!((scene.up_axis, scene.meters_per_unit), (UpAxis::Z, 1.0));
-    // Prim order; the Looks scope holds only materials and drops out;
-    // invisible prims stay, marked.
-    assert_eq!(
-        paths(&scene),
-        ["/World", "/World/Cube", "/World/Hidden", "/World/Moving"]
-    );
+    // Prim order, the Scope holding Materials among them (a library's
+    // place); invisible prims stay, marked.
+    let all = paths(&scene);
+    let expected = [
+        "/World",
+        "/World/Cube",
+        "/World/Hidden",
+        "/World/Moving",
+        "/World/Looks",
+    ];
+    assert_eq!(all, expected);
     assert!(!node(&scene, "/World/Hidden").visible);
     let world_node = node(&scene, "/World");
     assert_eq!(

@@ -8,19 +8,21 @@
 //!   Points makes them: its `Prototypes` scope holds an instanceable prim
 //!   for each prototype and material its instances show it in, each
 //!   instance placed by position, orientation and scale, its `id` among
-//!   the `ids`, its `v` the `velocities` and its `Cd` the `displayColor`
-//!   (in linear Rec.709). Instances a point instancer can't place (a
-//!   shear) are each an instanceable prim with its own matrix.
+//!   the `ids`, its `v` the `velocities` and every other attribute a
+//!   primvar of one value an instance (`vertex`), as a mesh's are written
+//!   (`Cd` the `displayColor`, in linear Rec.709). Instances a point
+//!   instancer can't place (a shear) are each an instanceable prim with its
+//!   own matrix.
 //!
 //! An instance's own `material` binds its prim, stronger than descendants
 //! where its prototype binds materials of its own (Studio renders every
 //! one of them in it), and a `material_map` shows a prototype written in
 //! the materials it maps to, once a map.
+use super::geometry::primvar;
 use super::{Kinds, Of, Out};
 use crate::space::matrix;
 use crate::usd::scene::{Instancer, Interpolation, Node, NodeKind, Primvar, Prototype};
 use crate::usd::sdf::{Array, Path, Token, Value as Usd};
-use kinogaki_studio_api::color::LIN_REC709;
 use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::geometry::{Domain, Values, Xform, names};
 use kinogaki_studio_api::standard::{self, Instances};
@@ -32,15 +34,10 @@ use std::sync::Arc;
 /// materials their prims and prototypes bind.
 const PRIMS_HOLD: [&str; 3] = [names::NAME, names::MATERIAL, names::MATERIAL_MAP];
 
-/// The Instance attributes a point instancer holds: its `ids`,
-/// `velocities` and `displayColor`, and the materials its prototypes bind.
-const INSTANCER_HOLDS: [&str; 5] = [
-    names::ID,
-    names::V,
-    names::CD,
-    names::MATERIAL,
-    names::MATERIAL_MAP,
-];
+/// The Instance attributes a point instancer has no place for: names and
+/// parts (every other is its `ids`, `velocities`, a primvar, or the
+/// materials its prototypes bind).
+const INSTANCER_LEAVES: [&str; 2] = [names::NAME, names::PART];
 
 /// What one instance shows: the prototype (an index into the scene's), its
 /// placement relative to the instances' value, and the material it binds.
@@ -90,12 +87,13 @@ impl Out<'_> {
                 )),
             },
         };
-        let held: &[&str] = match kinds {
-            Some(Kinds::Instancer(_)) => &INSTANCER_HOLDS,
-            _ => &PRIMS_HOLD,
-        };
+        let instancer = matches!(kinds, Some(Kinds::Instancer(_)));
         let left: Vec<&str> = (value.attributes().iter())
-            .filter(|(domain, name, _)| *domain == Domain::Instance && !held.contains(name))
+            .filter(|(domain, _, _)| *domain == Domain::Instance)
+            .filter(|(_, name, _)| match instancer {
+                true => INSTANCER_LEAVES.contains(name),
+                false => !PRIMS_HOLD.contains(name),
+            })
             .map(|(_, name, _)| name)
             .collect();
         if !left.is_empty() {
@@ -180,6 +178,7 @@ impl Out<'_> {
                 };
                 self.scene.prototypes.push(Prototype {
                     root: Path::absolute_root(),
+                    model: Token::empty(),
                     nodes: vec![target.node(&target.name, None)],
                 });
                 prototypes.push(self.scene.prototypes.len() - 1);
@@ -210,29 +209,47 @@ impl Out<'_> {
         }))
     }
 
-    /// The instances `kept` of `value`'s `v` as `velocities` and `Cd` as
-    /// `displayColor`, one value each (colors in linear Rec.709).
+    /// The instances `kept` of `value`'s `v` as `velocities` and its other
+    /// attributes (but `id`, materials, names and parts) as primvars of one
+    /// value an instance, as a mesh's are written (`Cd` the `displayColor`
+    /// in linear Rec.709).
     fn instance_primvars(&mut self, value: &Instances, kept: &[usize], name: &str) -> Vec<Primvar> {
-        let attributes = value.attributes();
-        let triples = |n: &str| attributes.tuples::<[f32; 3]>(Domain::Instance, n);
+        const HELD: [&str; 5] = [
+            names::ID,
+            names::MATERIAL,
+            names::MATERIAL_MAP,
+            names::NAME,
+            names::PART,
+        ];
         let mut primvars = Vec::new();
-        if let Some(v) = triples(names::V) {
-            let values = kept.iter().map(|&i| v[i]).collect();
-            primvars.push(per_instance("velocities", "vector3f[]", values, None));
-        }
-        if let Some(cd) = triples(names::CD) {
-            let mut colors: Vec<[f32; 3]> = kept.iter().map(|&i| cd[i]).collect();
-            let service = self.writing.colors;
-            let space = match service.convert_f32(service.working(), LIN_REC709, &mut colors) {
-                Ok(()) => None,
-                Err(e) => {
-                    self.warnings.push(format!(
-                        "{name}: instances' Cd kept in the working space: {e}"
-                    ));
-                    Some(Token::new(service.working()))
-                }
-            };
-            primvars.push(per_instance("displayColor", "color3f[]", colors, space));
+        for (domain, attribute_name, attribute) in value.attributes().iter() {
+            if domain != Domain::Instance || HELD.contains(&attribute_name) {
+                continue;
+            }
+            if attribute_name == names::V
+                && let Some(v) = value
+                    .attributes()
+                    .tuples::<[f32; 3]>(Domain::Instance, names::V)
+            {
+                let values = kept.iter().map(|&i| v[i]).collect();
+                primvars.push(velocities(values));
+                continue;
+            }
+            let (colors, warnings) = (self.writing.colors, &mut self.warnings);
+            let vertex = Interpolation::Vertex;
+            match primvar(
+                attribute_name,
+                attribute,
+                vertex,
+                Some(kept),
+                colors,
+                warnings,
+            ) {
+                Some(written) => primvars.push(written),
+                None => warnings.push(format!(
+                    "{name}: the instances' {attribute_name} has no USD primvar; left out"
+                )),
+            }
         }
         primvars
     }
@@ -290,6 +307,7 @@ impl Out<'_> {
         let made = (!nodes.is_empty()).then(|| {
             self.scene.prototypes.push(Prototype {
                 root: Path::absolute_root(),
+                model: Token::empty(),
                 nodes,
             });
             self.scene.prototypes.len() - 1
@@ -314,20 +332,16 @@ impl Out<'_> {
     }
 }
 
-/// A per-instance primvar `name` of USD type `type_name`.
-fn per_instance(
-    name: &str,
-    type_name: &str,
-    values: Vec<[f32; 3]>,
-    color_space: Option<Token>,
-) -> Primvar {
+/// Instances' velocities, one an instance: the point instancer's own
+/// `velocities`.
+fn velocities(values: Vec<[f32; 3]>) -> Primvar {
     Primvar {
-        name: Token::new(name),
-        type_name: Token::new(type_name),
+        name: Token::new("velocities"),
+        type_name: Token::new("vector3f[]"),
         interpolation: Interpolation::Vertex,
         element_size: 1,
         values: Usd::Array(Array::Vec3f(Arc::new(values))),
         indices: None,
-        color_space,
+        color_space: None,
     }
 }

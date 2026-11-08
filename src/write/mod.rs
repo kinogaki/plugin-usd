@@ -4,15 +4,20 @@
 //!
 //! The stage is in the project's units (`metersPerUnit`, `upAxis`), its
 //! default prim the one group the items are under (else one named after the
-//! file holding them), its materials in that prim's `Looks`. Each item is
-//! its prim, placed relative to its parent's: polygons and curves
+//! file holding them). Each materials item (a Material Library) is a Scope
+//! at its place, named as the library, its Materials beneath by their
+//! names; a group holding only libraries, unplaced, is a Scope too. Each
+//! other item is its prim, placed relative to its parent's: polygons and curves
 //! ([`geometry`]), what the host makes polygons of (a B-rep), lights and
 //! cameras ([`crate::lights`]), and instances as USD's instancing
 //! ([`instances`]). A value several items show (copies sharing one) is
 //! written once, as a prototype each of their prims is an instance of.
+//! Prims carry the model kinds of [`kinds`].
 mod assets;
+mod curves;
 mod geometry;
 mod instances;
+mod kinds;
 mod materials;
 mod preview;
 
@@ -93,10 +98,25 @@ impl FormatWriter for Writer {
             }
         };
         let root = Path::absolute_root().child(Token::new(&root_name));
-        let mut root_children = Unique::default();
-        let looks = root.child(Token::new(&root_children.take("Looks")));
-        for item in items.iter().filter(|i| is_materials(i)) {
-            out.materials_item(item, &looks)?;
+        // Each item's prim name, unique beside its siblings (the root's
+        // children for the top ones), libraries among them; the prims an
+        // item's value makes beneath it take names after its children's.
+        let mut children: HashMap<Option<usize>, Unique> = HashMap::new();
+        let mut paths: Vec<Path> = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let parent = item.parent.filter(|&p| Some(p) != root_item);
+            let path = match (Some(i) == root_item, parent) {
+                (true, _) => root.clone(),
+                (false, parent) => {
+                    let above = parent.map_or(&root, |p| &paths[p]);
+                    let name = names::identifier(&item.name);
+                    above.child(Token::new(&children.entry(parent).or_default().take(&name)))
+                }
+            };
+            paths.push(path);
+        }
+        for (item, path) in items.iter().zip(&paths) {
+            out.materials_item(item, path)?;
         }
         out.scene.nodes.push(Node {
             visible: root_item.is_none_or(|i| items[i].visible),
@@ -108,21 +128,32 @@ impl FormatWriter for Writer {
         for parent in items.iter().filter_map(|i| i.parent) {
             parents[parent] = true;
         }
+        let scopes = scopes(items);
         let mut node_of: Vec<Option<usize>> = vec![None; items.len()];
-        let mut children: HashMap<usize, Unique> = HashMap::from([(0, root_children)]);
         for (i, item) in items.iter().enumerate() {
             writing.check()?;
-            if is_materials(item) {
-                continue;
-            }
             if Some(i) == root_item {
                 node_of[i] = Some(0);
                 continue;
             }
             let parent = item.parent.and_then(|p| node_of[p]).unwrap_or(0);
-            let name = (children.entry(parent).or_default()).take(&names::identifier(&item.name));
-            node_of[i] = Some(out.item(item, &name, parent, parents[i])?);
+            let name = paths[i].name();
+            node_of[i] = Some(match scopes[i] {
+                true => {
+                    let scope = Node {
+                        type_name: Token::new("Scope"),
+                        ..Node::group(name, Some(parent))
+                    };
+                    out.scene.nodes.push(scope);
+                    out.scene.nodes.len() - 1
+                }
+                false => {
+                    let names = children.entry(Some(i)).or_default();
+                    out.item(item, (name, parent), (parents[i], names))?
+                }
+            });
         }
+        kinds::assign(&mut out.scene);
         let (assets, unpacked) = std::mem::replace(&mut out.assets, Assets::of(path)).assets();
         out.scene.assets = assets;
         out.warnings.extend(unpacked);
@@ -133,9 +164,29 @@ impl FormatWriter for Writer {
     }
 }
 
-/// Whether `item` holds the file's materials.
+/// Whether `item` holds a library of materials.
 fn is_materials(item: &FileItem) -> bool {
     (item.data.as_ref()).is_some_and(|d| standard::materials().get(d).is_some())
+}
+
+/// Which items are Scopes: libraries, and groups holding only libraries
+/// and such groups, unplaced and shown (USD's grouping of what has no
+/// transform; any other group is an Xform).
+fn scopes(items: &[FileItem]) -> Vec<bool> {
+    let mut holds = vec![false; items.len()];
+    let mut scope: Vec<bool> = (items.iter())
+        .map(|i| {
+            is_materials(i) || (i.data.is_none() && i.visible && i.placement == Xform::IDENTITY)
+        })
+        .collect();
+    for (i, item) in items.iter().enumerate().rev() {
+        if let Some(p) = item.parent {
+            holds[p] = true;
+            scope[p] &= scope[i];
+        }
+        scope[i] &= holds[i] || is_materials(item);
+    }
+    scope
 }
 
 /// The values (by identity) several of `items` show that a prototype can
@@ -196,8 +247,9 @@ struct Out<'w> {
 type Of = (usize, Vec<(String, String)>);
 
 impl Out<'_> {
-    /// The materials and images `item` holds, the materials under `looks`.
-    fn materials_item(&mut self, item: &FileItem, looks: &Path) -> Result<(), Error> {
+    /// The materials `item` holds (a library), each beneath `library`, the
+    /// library's prim, by its name.
+    fn materials_item(&mut self, item: &FileItem, library: &Path) -> Result<(), Error> {
         let held = item
             .data
             .as_ref()
@@ -206,7 +258,7 @@ impl Out<'_> {
         let mut names = Unique::default();
         for material in &held.materials {
             let name = names.take(&names::identifier(&material.name));
-            let path = looks.child(Token::new(&name));
+            let path = library.child(Token::new(&name));
             let colors = self.writing.colors;
             let made =
                 materials::material(material, path, &mut self.assets, colors, &mut self.warnings)?;
@@ -218,15 +270,17 @@ impl Out<'_> {
         Ok(())
     }
 
-    /// `item` as the node `name` under node `parent`; its index. An item
-    /// with children (`parent_of`) holds an instance or a point instancer
-    /// in a child prim, as an instance's prim holds nothing of its own.
+    /// `item` as the node `name` under node `parent`; its index. Its value
+    /// is its prim's when it is one prim and the item holds no children
+    /// (`parent_of`); else the item's prim is a group and the value's
+    /// prims are beneath it, named by `names` beside the item's children:
+    /// a gprim holds no prims (UsdGeom's encapsulation rule), and an
+    /// instance's prim holds nothing of its own.
     fn item(
         &mut self,
         item: &FileItem,
-        name: &str,
-        parent: usize,
-        parent_of: bool,
+        (name, parent): (&str, usize),
+        (parent_of, names): (bool, &mut Unique),
     ) -> Result<usize, Error> {
         let mut node = Node {
             transform: matrix(&item.placement),
@@ -250,14 +304,17 @@ impl Out<'_> {
             None => None,
         };
         match kinds {
+            Some(Kinds::Prims(mut prims)) if prims.len() == 1 && !parent_of => {
+                let (_, kind, material) = prims.remove(0);
+                (node.kind, node.material) = (kind, material);
+            }
             Some(Kinds::Prims(prims)) => {
-                let mut names = Unique::default();
-                for (k, (suffix, kind, material)) in prims.into_iter().enumerate() {
-                    if k == 0 && suffix.is_empty() {
-                        (node.kind, node.material) = (kind, material);
-                        continue;
-                    }
-                    let child = names.take(if suffix.is_empty() { "Shape" } else { suffix });
+                for (suffix, kind, material) in prims {
+                    let child = names.take(if suffix.is_empty() {
+                        "Geometry"
+                    } else {
+                        suffix
+                    });
                     children.push(Node {
                         kind,
                         material,
@@ -277,13 +334,14 @@ impl Out<'_> {
             Some(Kinds::Instancer(instancer)) if !parent_of => {
                 node.kind = NodeKind::Instancer(Box::new(instancer));
             }
-            Some(Kinds::Instance(shows)) => children.push(shows.node("Instance", Some(at))),
+            Some(Kinds::Instance(shows)) => {
+                children.push(shows.node(&names.take("Instance"), Some(at)));
+            }
             Some(Kinds::Instancer(instancer)) => children.push(Node {
                 kind: NodeKind::Instancer(Box::new(instancer)),
-                ..Node::group("Instances", Some(at))
+                ..Node::group(&names.take("Instances"), Some(at))
             }),
             Some(Kinds::Instances(each)) => {
-                let mut names = Unique::default();
                 for shows in each {
                     let name = names.take(&shows.name);
                     children.push(shows.node(&name, Some(at)));

@@ -5,7 +5,9 @@
 //! other file an Image node names stays a path, said. A usda or usdc names
 //! them as every written document does ([`Beside`]): a file on disk by its
 //! path relative to the layer, an embedded file written into
-//! `<stem>_textures` beside it.
+//! `<stem>_textures` beside it. A path relative to the layer starts `./`
+//! (or `../`), file-relative as the usdz specification encourages
+//! (spec_usdz.rst:360-372), never a search path.
 use crate::names::file_name;
 use crate::usd::package::{Buffer, Bytes, packable};
 use crate::usd::scene::{Asset, AssetSource};
@@ -80,7 +82,7 @@ impl Assets {
     pub fn file(&mut self, file: &ImageFile) -> Result<Token, Error> {
         match self {
             Assets::Packed(packed) => Ok(packed.file(file)),
-            Assets::Beside(beside) => beside.name(file).map(|name| Token::new(&name)),
+            Assets::Beside(beside) => beside.name(file).map(|name| Token::new(&relative(name))),
         }
     }
 
@@ -91,6 +93,16 @@ impl Assets {
             Assets::Packed(packed) => (packed.assets, packed.left),
             Assets::Beside(_) => (Vec::new(), Vec::new()),
         }
+    }
+}
+
+/// `name`, a path [`Beside`] gives, file-relative: `./` before a path
+/// relative to the layer's folder that doesn't start `./` or `../`.
+fn relative(name: String) -> String {
+    let anchored = name.starts_with("./") || name.starts_with("../");
+    match anchored || Path::new(&name).is_absolute() {
+        true => name,
+        false => format!("./{name}"),
     }
 }
 

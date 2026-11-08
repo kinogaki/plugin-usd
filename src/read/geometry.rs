@@ -1,8 +1,9 @@
 //! A stage's geometry as the standard Geometry, in the project's space:
 //! meshes (implicit shapes as the meshes they tessellate to) with their
 //! primvars as attributes ([`super::primvars`]), each face's material (a
-//! GeomSubset's binding over its mesh's) and GeomSubsets as groups; curves;
-//! points. What is left out is said with the prim's path.
+//! GeomSubset's binding over its mesh's), GeomSubsets of family `part` as
+//! the faces' `part` and the others as groups; curves; points. What is left
+//! out is said with the prim's path.
 use super::primvars::{self, Spread};
 use crate::usd::scene::{
     CurveBasis, CurveForm, CurveWrap, Curves, Interpolation, Mesh, Points, Primvar, SubsetElement,
@@ -108,8 +109,18 @@ pub(super) fn mesh(
     // Each face's material: its subset's binding, else the mesh's.
     let mut face_material: Vec<Option<usize>> = vec![material; counts.len()];
     let mut bound = material.is_some();
+    // Each face's part: its `part` subset's name.
+    let mut face_part: Option<Vec<&str>> = None;
     for subset in &mesh.subsets {
         match subset.element {
+            SubsetElement::Face if subset.family.as_str() == "part" => {
+                let parts = face_part.get_or_insert_with(|| vec![""; counts.len()]);
+                for &f in subset.indices.iter() {
+                    if let Some(part) = parts.get_mut(f as usize) {
+                        *part = subset.name.as_str();
+                    }
+                }
+            }
             SubsetElement::Face => {
                 if let Some(m) = subset.material {
                     bound = true;
@@ -159,6 +170,10 @@ pub(super) fn mesh(
         attributes =
             attributes.with(Domain::Primitive, standard::MATERIAL, Attribute::text(text))?;
     }
+    if let Some(parts) = face_part {
+        let text = Text::from_strs(kept.iter().map(|&f| parts[f as usize]));
+        attributes = attributes.with(Domain::Primitive, standard::PART, Attribute::text(text))?;
+    }
     Geometry::new(positions.into(), table, attributes)
 }
 
@@ -190,12 +205,13 @@ fn group(
     attributes.with_group(domain, name, members)
 }
 
-/// `curves`, the prim at `prim`, as curve primitives: linear curves
-/// polylines (a periodic one closing on its first point), cubic ones
-/// Bézier, B-spline or Catmull-Rom curves, NURBS as they are; `widths` as
-/// `width`.
+/// `curves`, the prim at `prim` bound to `material`, as curve primitives:
+/// linear curves polylines (a periodic one closing on its first point),
+/// cubic ones Bézier, B-spline or Catmull-Rom curves, NURBS as they are;
+/// `widths` as `width`, the other primitives as a mesh's are.
 pub(super) fn curves(
     curves: &Curves,
+    material: Option<usize>,
     cx: &Shaping<'_>,
     prim: &Path,
     warnings: &mut Vec<String>,
@@ -264,33 +280,50 @@ pub(super) fn curves(
             "{prim}: open B-spline and Catmull-Rom curves end on their end points"
         ));
     }
-    let data = CurveData::new(
-        degrees.into(),
-        Knots::new(knot_offsets.into(), knots.into()),
-        weights.map(Column::new),
-    );
+    // Polylines alone hold no curve data.
+    let curved = kinds.iter().any(|k| k.basis() != Basis::Linear);
+    let data = curved.then(|| {
+        let knots = Knots::new(knot_offsets.into(), knots.into());
+        CurveData::new(degrees.into(), knots, weights.map(Column::new))
+    });
     let table = Primitives::new(
         positions.len(),
         offsets.into(),
         vertices.into(),
         kinds.into(),
-        Some(data),
+        data,
     )?;
+    let count = curves.vertex_counts.len();
     let mut attributes = Attributes::new();
-    if let Some(widths) = curves.primvars.iter().find(|p| p.name.as_str() == "widths") {
-        attributes = width(
-            attributes,
-            widths,
-            curves.vertex_counts.len(),
-            positions.len(),
-            cx,
-        )?;
+    let spread = Spread {
+        primitives: None,
+        corners: None,
+        points: positions.len(),
+        faces: count,
+        vertices: 0,
+    };
+    for primvar in &curves.primvars {
+        attributes = match primvar.name.as_str() {
+            "widths" => width(attributes, primvar, count, positions.len(), cx)?,
+            _ => primvars::attribute(attributes, primvar, &spread, cx, prim, warnings)?,
+        };
+    }
+    if let Some(m) = material {
+        let key = std::iter::repeat_n(&*cx.keys[m], count);
+        let text = Attribute::text(Text::from_strs(key));
+        attributes = attributes.with(Domain::Primitive, standard::MATERIAL, text)?;
     }
     Geometry::new(positions.into(), table, attributes)
 }
 
-/// `points` as points alone: `widths` as `width`, `ids` as `id`.
-pub(super) fn points(points: &Points, cx: &Shaping<'_>) -> Result<Geometry, Error> {
+/// `points`, the prim at `prim`, as points alone: `widths` as `width`,
+/// `ids` as `id`, the other primvars as a mesh's are.
+pub(super) fn points(
+    points: &Points,
+    cx: &Shaping<'_>,
+    prim: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Geometry, Error> {
     let positions: Vec<[f64; 3]> = (points.points.iter())
         .map(|p| cx.space.point(p.map(f64::from).into()).to_array())
         .collect();
@@ -302,8 +335,18 @@ pub(super) fn points(points: &Points, cx: &Shaping<'_>) -> Result<Geometry, Erro
         None,
     )?;
     let mut attributes = Attributes::new();
-    if let Some(widths) = points.primvars.iter().find(|p| p.name.as_str() == "widths") {
-        attributes = width(attributes, widths, 0, positions.len(), cx)?;
+    let spread = Spread {
+        primitives: None,
+        corners: None,
+        points: positions.len(),
+        faces: 0,
+        vertices: 0,
+    };
+    for primvar in &points.primvars {
+        attributes = match primvar.name.as_str() {
+            "widths" => width(attributes, primvar, 0, positions.len(), cx)?,
+            _ => primvars::attribute(attributes, primvar, &spread, cx, prim, warnings)?,
+        };
     }
     if let Some(ids) = &points.ids
         && ids.len() == positions.len()

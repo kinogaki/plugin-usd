@@ -1,20 +1,22 @@
 //! The standard Geometry as USD prims: its polygons a Mesh with its
 //! attributes as primvars (`uv` as `st`, `N` as `normals`, `Cd` as
-//! `displayColor`, on the interpolation their domain is; colors in linear
-//! Rec.709, USD's own, where other applications read them), its faces'
-//! materials as bindings (GeomSubsets where they differ) and its primitive
-//! groups as GeomSubsets; its curves BasisCurves or NurbsCurves, one prim
-//! for each kind of curve; points alone, Points.
+//! `displayColor`, `name` a uniform string, on the interpolation their
+//! domain is; colors in linear Rec.709, USD's own, where other applications
+//! read them), its faces' materials as bindings (GeomSubsets of family
+//! `materialBind` where they differ, each named after the primitive group
+//! holding exactly its faces when there is one), its `part` as GeomSubsets
+//! of family `part`, and its other primitive and point groups as
+//! GeomSubsets; its curves and points as [`super::curves`] writes them.
+use super::curves;
 use crate::names;
 use crate::usd::scene::{
-    CurveBasis, CurveForm, CurveWrap, Curves, Interpolation, Mesh, NodeKind, Points, Primvar,
-    Subdivision, Subset, SubsetElement,
+    Interpolation, Mesh, NodeKind, Primvar, Subdivision, Subset, SubsetElement,
 };
 use crate::usd::sdf::{Array, Token, Value as Usd};
 use kinogaki_studio_api::color::{ColorService, LIN_REC709};
 use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::geometry::{
-    Attribute, Basis, Domain, Geometry, Kind, Meaning, Values, names as standard,
+    Attribute, Domain, Geometry, Kind, Meaning, Text, Values, names as standard,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,41 +35,93 @@ pub(super) struct Shaping<'a> {
     pub colors: &'a dyn ColorService,
 }
 
-/// `value` as USD prims.
+/// Each primitive's material (an index into the scene's): the `material`
+/// text's keys resolved once, a key the file holds none of said.
+struct Looks<'v> {
+    text: Option<&'v Text>,
+    table: Vec<Option<usize>>,
+}
+
+impl<'v> Looks<'v> {
+    fn of(value: &'v Geometry, cx: &Shaping<'_>, warnings: &mut Vec<String>) -> Looks<'v> {
+        let text = value
+            .attributes()
+            .text(Domain::Primitive, standard::MATERIAL);
+        let keys = text.map_or(&[][..], |t| t.table());
+        let table = (keys.iter())
+            .map(|key| {
+                let found = cx.materials.get(&**key).copied();
+                if found.is_none() && !key.is_empty() {
+                    warnings.push(format!(
+                        "faces name {key}, which isn't written; left unbound"
+                    ));
+                }
+                found
+            })
+            .collect();
+        Looks { text, table }
+    }
+
+    /// Primitive `p`'s material; an index past the table names nothing.
+    fn at(&self, p: usize) -> Option<usize> {
+        let text = self.text?;
+        self.table
+            .get(text.indices()[p] as usize)
+            .copied()
+            .flatten()
+    }
+}
+
+/// `value` as USD prims: its polygons a mesh, its curves a prim for each
+/// kind, degree, closing and material.
 pub(super) fn prims(value: &Geometry, cx: &Shaping<'_>, warnings: &mut Vec<String>) -> Prims {
     let table = value.primitives();
+    let looks = Looks::of(value, cx, warnings);
     let polygons: Vec<usize> = (0..table.len())
         .filter(|&p| table.kind(p).is_polygon())
         .collect();
     let mut prims = Vec::new();
     if !polygons.is_empty() {
-        let (mesh, material) = mesh(value, &polygons, cx, warnings);
+        let (mesh, material) = mesh(value, &polygons, (&looks, cx), warnings);
         prims.push(("", NodeKind::Mesh(Box::new(mesh)), material));
     }
-    let mut kinds: Vec<(Kind, u8)> = Vec::new();
+    type Group = ((Kind, u8, bool), Option<usize>, Vec<usize>);
+    let mut groups: Vec<Group> = Vec::new();
+    let mut unwritten: Vec<(Kind, u8)> = Vec::new();
     for p in (0..table.len()).filter(|&p| !table.kind(p).is_polygon()) {
-        let degree = table.curves().map_or(1, |c| c.degrees()[p]);
-        if !kinds.contains(&(table.kind(p), degree)) {
-            kinds.push((table.kind(p), degree));
+        let (kind, degree) = (table.kind(p), table.curves().map_or(1, |c| c.degrees()[p]));
+        if curves::form(kind, degree, false).is_none() {
+            if !unwritten.contains(&(kind, degree)) {
+                unwritten.push((kind, degree));
+                warnings.push(format!(
+                    "{} curves of degree {degree} have no USD curves; left out",
+                    kind.basis().name()
+                ));
+            }
+            continue;
+        }
+        let of = ((kind, degree, curves::closes(table, p)), looks.at(p));
+        match groups.iter_mut().find(|(shape, m, _)| (*shape, *m) == of) {
+            Some((.., members)) => members.push(p),
+            None => groups.push((of.0, of.1, vec![p])),
         }
     }
-    for (kind, degree) in kinds {
-        match curves(value, kind, degree) {
-            Some(curves) => prims.push(("Curves", NodeKind::Curves(Box::new(curves)), None)),
-            None => warnings.push(format!(
-                "{} curves of degree {degree} have no USD curves; left out",
-                kind.basis().name()
-            )),
-        }
+    for ((kind, degree, closed), material, members) in groups {
+        let Some(form) = curves::form(kind, degree, closed) else {
+            continue;
+        };
+        let made = curves::curves(value, (form, degree, closed), &members, cx.colors, warnings);
+        prims.push(("Curves", NodeKind::Curves(Box::new(made)), material));
     }
     if table.is_empty() && !value.positions().is_empty() {
-        prims.push(("", NodeKind::Points(Box::new(points(value))), None));
+        let points = curves::points(value, cx.colors, warnings);
+        prims.push(("", NodeKind::Points(Box::new(points)), None));
     }
     Prims { prims }
 }
 
 /// Positions as USD holds them.
-fn positions(value: &Geometry, at: impl Iterator<Item = usize>) -> Arc<Vec<[f32; 3]>> {
+pub(super) fn positions(value: &Geometry, at: impl Iterator<Item = usize>) -> Arc<Vec<[f32; 3]>> {
     let p = value.positions();
     Arc::new(at.map(|i| p[i].map(|c| c as f32)).collect())
 }
@@ -77,7 +131,7 @@ fn positions(value: &Geometry, at: impl Iterator<Item = usize>) -> Arc<Vec<[f32;
 fn mesh(
     value: &Geometry,
     polygons: &[usize],
-    cx: &Shaping<'_>,
+    (looks, cx): (&Looks<'_>, &Shaping<'_>),
     warnings: &mut Vec<String>,
 ) -> (Mesh, Option<usize>) {
     let table = value.primitives();
@@ -102,20 +156,19 @@ fn mesh(
             Domain::Detail => (Interpolation::Constant, None),
             _ => continue,
         };
-        if matches!(name, standard::MATERIAL | standard::NAME | standard::PART) {
+        if matches!(name, standard::MATERIAL | standard::PART) {
             continue;
         }
-        match primvar(name, attribute, interpolation, picked, cx, warnings) {
+        match primvar(name, attribute, interpolation, picked, cx.colors, warnings) {
             Some(primvar) => primvars.push(primvar),
             None => warnings.push(format!("attribute {name} has no USD primvar; left out")),
         }
     }
-    let mut subsets = Vec::new();
-    let mut names = Unique::default();
-    let material = materials(value, polygons, cx, &mut subsets, &mut names, warnings);
     let at: HashMap<usize, i32> = (polygons.iter().enumerate())
         .map(|(k, &p)| (p, k as i32))
         .collect();
+    // The groups, each its faces (by their place in the mesh) or points.
+    let mut groups: Vec<(&str, SubsetElement, Vec<i32>)> = Vec::new();
     for (domain, name, members) in value.attributes().groups() {
         let (element, indices): (_, Vec<i32>) = match domain {
             Domain::Primitive => (
@@ -131,9 +184,27 @@ fn mesh(
             ),
             _ => continue,
         };
-        if name.starts_with('.') || indices.is_empty() {
-            continue;
+        if !name.starts_with('.') && !indices.is_empty() {
+            groups.push((name, element, indices));
         }
+    }
+    let mut subsets = Vec::new();
+    let mut names = Unique::default();
+    let material = materials(polygons, looks, &mut subsets);
+    // A material's subset takes the name of the group holding exactly its
+    // faces, which isn't written again: a file's subsets come back once.
+    for subset in &mut subsets {
+        let same = groups.iter().position(|(_, element, indices)| {
+            *element == SubsetElement::Face && **indices == *subset.indices
+        });
+        let named = match same {
+            Some(k) => groups.remove(k).0.to_owned(),
+            None => subset.name.to_string(),
+        };
+        subset.name = Token::new(&names.take(&names::identifier(&named)));
+    }
+    subsets.extend(parts(value, polygons, &mut names));
+    for (name, element, indices) in groups {
         subsets.push(Subset {
             name: Token::new(&names.take(&names::identifier(name))),
             element,
@@ -161,37 +232,42 @@ fn mesh(
     (mesh, material)
 }
 
-/// The faces' materials: the one all show, else a GeomSubset binding each
-/// (family `materialBind`) pushed to `subsets`.
-fn materials(
-    value: &Geometry,
-    polygons: &[usize],
-    cx: &Shaping<'_>,
-    subsets: &mut Vec<Subset>,
-    names: &mut Unique,
-    warnings: &mut Vec<String>,
-) -> Option<usize> {
-    let text = value
-        .attributes()
-        .text(Domain::Primitive, standard::MATERIAL)?;
-    // Each key of the text's table once: its material, said once when the
-    // file holds none of that key.
-    let table: Vec<Option<usize>> = (text.table().iter())
-        .map(|key| {
-            let found = cx.materials.get(&**key).copied();
-            if found.is_none() && !key.is_empty() {
-                warnings.push(format!(
-                    "faces name {key}, which isn't written; left unbound"
-                ));
-            }
-            found
+/// The faces' `part` as GeomSubsets of family `part`, one a part, each
+/// named after it.
+fn parts(value: &Geometry, polygons: &[usize], names: &mut Unique) -> Vec<Subset> {
+    let Some(text) = value.attributes().text(Domain::Primitive, standard::PART) else {
+        return Vec::new();
+    };
+    let mut parts: Vec<(&str, Vec<i32>)> = Vec::new();
+    for (k, &p) in polygons.iter().enumerate() {
+        let Some(part) = text.get(p).filter(|part| !part.is_empty()) else {
+            continue;
+        };
+        match parts.iter_mut().find(|(named, _)| *named == part) {
+            Some((_, faces)) => faces.push(k as i32),
+            None => parts.push((part, vec![k as i32])),
+        }
+    }
+    (parts.into_iter())
+        .map(|(part, faces)| Subset {
+            name: Token::new(&names.take(&names::identifier(part))),
+            element: SubsetElement::Face,
+            indices: Arc::new(faces),
+            family: Token::new("part"),
+            material: None,
         })
-        .collect();
+        .collect()
+}
+
+/// The faces' materials: the one all show, else a GeomSubset binding each
+/// (family `materialBind`, named `material_<n>` until named after a group)
+/// pushed to `subsets`.
+fn materials(polygons: &[usize], looks: &Looks<'_>, subsets: &mut Vec<Subset>) -> Option<usize> {
+    looks.text?;
     let mut faces: Vec<(usize, Vec<i32>)> = Vec::new();
     let mut unbound = false;
     for (k, &p) in polygons.iter().enumerate() {
-        // An index past the table is a face naming nothing.
-        match table.get(text.indices()[p] as usize).copied().flatten() {
+        match looks.at(p) {
             Some(m) => match faces.iter_mut().find(|(at, _)| *at == m) {
                 Some((_, members)) => members.push(k as i32),
                 None => faces.push((m, vec![k as i32])),
@@ -205,7 +281,7 @@ fn materials(
     }
     for (m, members) in faces {
         subsets.push(Subset {
-            name: Token::new(&names.take(&format!("material_{m}"))),
+            name: Token::new(&format!("material_{m}")),
             element: SubsetElement::Face,
             indices: Arc::new(members),
             family: Token::new("materialBind"),
@@ -221,12 +297,12 @@ fn materials(
 /// linear Rec.709, which other applications read a primvar as whatever its
 /// `colorSpace` says; where they can't be, they stay in the working space,
 /// said there.
-fn primvar(
+pub(super) fn primvar(
     name: &str,
     attribute: &Attribute,
     interpolation: Interpolation,
     picked: Option<&[usize]>,
-    cx: &Shaping<'_>,
+    colors: &dyn ColorService,
     warnings: &mut Vec<String>,
 ) -> Option<Primvar> {
     let ty = attribute.ty();
@@ -235,7 +311,6 @@ fn primvar(
     let mut color_space = None;
     let (type_name, values, element_size) = match attribute.values() {
         Values::F32(v) if meaning == Meaning::Color && matches!(width, 3 | 4) => {
-            let colors = cx.colors;
             let mut flat = v.as_slice().to_vec();
             let mut rgb: Vec<[f32; 3]> = flat
                 .chunks_exact(width)
@@ -324,102 +399,5 @@ fn reals(
             };
             ("float[]", Array::Float(Arc::new(all)), n)
         }
-    }
-}
-
-/// `value`'s curves of `kind` and `degree` as one prim (each curve's
-/// points its own); none for a kind USD has no curves of.
-fn curves(value: &Geometry, kind: Kind, degree: u8) -> Option<Curves> {
-    let table = value.primitives();
-    let closed = kind.closed();
-    let form = match (kind.basis(), degree) {
-        (Basis::Linear, _) => CurveForm::Linear { periodic: false },
-        (Basis::Bezier, 3) => cubic(CurveBasis::Bezier, closed, CurveWrap::Nonperiodic),
-        (Basis::BSpline, 3) => cubic(CurveBasis::BSpline, closed, CurveWrap::Pinned),
-        (Basis::CatmullRom, _) => cubic(CurveBasis::CatmullRom, closed, CurveWrap::Pinned),
-        (Basis::Nurbs, _) => CurveForm::Nurbs {
-            orders: Vec::new(),
-            knots: Vec::new(),
-            ranges: Vec::new(),
-            weights: Vec::new(),
-        },
-        _ => return None,
-    };
-    let of_kind: Vec<usize> = (0..table.len())
-        .filter(|&p| {
-            table.kind(p) == kind && table.curves().map_or(1, |c| c.degrees()[p]) == degree
-        })
-        .collect();
-    let mut counts = Vec::with_capacity(of_kind.len());
-    let mut at = Vec::new();
-    let mut form = form;
-    for &p in &of_kind {
-        let points = table.primitive(p);
-        counts.push(points.len() as i32);
-        at.extend(points.iter().map(|&i| i as usize));
-        if let CurveForm::Nurbs {
-            orders,
-            knots,
-            weights,
-            ..
-        } = &mut form
-        {
-            let data = table.curves().expect("NURBS curves hold their data");
-            orders.push(i32::from(degree) + 1);
-            knots.extend_from_slice(data.knots().of(p));
-            if let Some(w) = data.weights() {
-                weights.extend(table.primitive_vertices(p).map(|v| w[v]));
-            }
-        }
-    }
-    let mut primvars = Vec::new();
-    if let Some(widths) = value
-        .attributes()
-        .tuples::<f32>(Domain::Point, standard::WIDTH)
-    {
-        let values: Vec<f32> = at.iter().map(|&i| widths[i]).collect();
-        primvars.push(Primvar {
-            name: Token::new("widths"),
-            type_name: Token::new("float[]"),
-            interpolation: Interpolation::Vertex,
-            element_size: 1,
-            values: Usd::Array(Array::Float(Arc::new(values))),
-            indices: None,
-            color_space: None,
-        });
-    }
-    Some(Curves {
-        form,
-        vertex_counts: Arc::new(counts),
-        points: positions(value, at.into_iter()),
-        primvars,
-    })
-}
-
-fn cubic(basis: CurveBasis, closed: bool, open: CurveWrap) -> CurveForm {
-    let wrap = if closed { CurveWrap::Periodic } else { open };
-    CurveForm::Cubic { basis, wrap }
-}
-
-/// Points alone, with `width` as `widths` and `id` as `ids`.
-fn points(value: &Geometry) -> Points {
-    let attributes = value.attributes();
-    let mut primvars = Vec::new();
-    if let Some(widths) = attributes.tuples::<f32>(Domain::Point, standard::WIDTH) {
-        primvars.push(Primvar {
-            name: Token::new("widths"),
-            type_name: Token::new("float[]"),
-            interpolation: Interpolation::Vertex,
-            element_size: 1,
-            values: Usd::Array(Array::Float(Arc::new(widths.to_vec()))),
-            indices: None,
-            color_space: None,
-        });
-    }
-    Points {
-        points: positions(value, 0..value.positions().len()),
-        ids: (attributes.tuples::<i64>(Domain::Point, standard::ID))
-            .map(|ids| Arc::new(ids.to_vec())),
-        primvars,
     }
 }

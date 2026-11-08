@@ -94,7 +94,18 @@ fn a_referenced_materialx_documents_materials_import_with_their_textures() {
     std::fs::write(&path, BOARD).unwrap();
     let read = read_file(&path, metres(), false);
     let said: Vec<&str> = read.warnings.iter().map(|w| w.message.as_str()).collect();
-    assert!(said.is_empty(), "{said:?}");
+    let gathered = "/Board/Left/Materials: Materials inside an instance's prototype go into \
+                    a library named Materials beside the instance";
+    assert_eq!(said, [gathered]);
+    // The prototype's Materials beside its instances, the third piece's in
+    // its own Scope.
+    let libraries = crate::support::libraries(&read);
+    let steel = || vec!["Steel".to_owned()];
+    let expected = [
+        ("/Board/Materials", steel()),
+        ("/Board/Loose/Materials", steel()),
+    ];
+    assert_eq!(libraries, expected.map(|(p, m)| (p.to_owned(), m)));
     // The instances' prototype is named by its source, the first of them.
     let looks = materials(&read);
     let keys: Vec<&str> = looks.materials.iter().map(|m| m.key.as_str()).collect();

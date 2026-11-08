@@ -5,7 +5,7 @@
 use crate::common::{fixture, node, round_trips, scene_of};
 use kinogaki_studio_api::format::ReadBudget;
 use kinogaki_usd::usd::package::Bytes;
-use kinogaki_usd::usd::scene::{self, AssetSource, ReadOptions};
+use kinogaki_usd::usd::scene::{self, AssetSource, NodeKind, ReadOptions};
 use kinogaki_usd::usd::sdf::{Path, Token, Value};
 use kinogaki_usd::usd::shade::{ShadeKind, Source};
 use kinogaki_usd::usd::{Stage, StageOptions};
@@ -253,6 +253,23 @@ def Xform "World" (
             point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
             rel material:binding = </Looks/Plain>
         }
+
+        def Mesh "Subsets"
+        {
+            int[] faceVertexCounts = [3, 3]
+            int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+
+            def GeomSubset "Front" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                uniform token elementType = "face"
+                uniform token familyName = "materialBind"
+                int[] indices = [0]
+                rel material:binding = </Looks/Plain>
+            }
+        }
     }
 }
 
@@ -275,12 +292,125 @@ def Scope "Looks"
         "Rich",
         "stronger than descendants"
     );
+    // A stronger binding above a mesh beats its subsets' too.
+    assert_eq!(bound("/World/Strong/Subsets"), "Rich");
+    let NodeKind::Mesh(mesh) = &node(&scene, "/World/Strong/Subsets").kind else {
+        panic!("a mesh");
+    };
+    let rich = node(&scene, "/World/Strong/Subsets").material;
+    assert_eq!(mesh.subsets[0].material, rich, "the subset's binding loses");
     let names: Vec<&str> = scene.materials.iter().map(|m| m.path.name()).collect();
     assert_eq!(
         names,
         ["Plain", "Rich", "Unbound"],
         "unbound materials are read too"
     );
+}
+
+/// Collection-based bindings bind their members (UsdCollectionAPI's
+/// includes, excludes and expansion), stronger than a direct binding on
+/// the same prim, weaker than a member's own unless stronger than
+/// descendants.
+#[test]
+fn collection_bindings_bind_their_members() {
+    let triangle = "int[] faceVertexCounts = [3]\n int[] faceVertexIndices = [0, 1, 2]\n \
+                    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]";
+    let text = format!(
+        r#"#usda 1.0
+def Xform "Shelf" (
+    prepend apiSchemas = ["MaterialBindingAPI", "CollectionAPI:metal", "CollectionAPI:edge"]
+)
+{{
+    rel collection:metal:includes = [</Shelf/Bolts>, </Shelf/Board>]
+    rel collection:metal:excludes = </Shelf/Bolts/Brass>
+    uniform token collection:edge:expansionRule = "explicitOnly"
+    rel collection:edge:includes = </Shelf/Rim>
+    rel material:binding = </Looks/Plain>
+    rel material:binding:collection:metal = [</Shelf.collection:metal>, </Looks/Rich>]
+    rel material:binding:collection:edge = [</Looks/Edge>, </Shelf.collection:edge>] (
+        bindMaterialAs = "strongerThanDescendants"
+    )
+
+    def Mesh "Board" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {{
+        {triangle}
+        rel material:binding = </Looks/Plain>
+    }}
+
+    def Mesh "Loose"
+    {{
+        {triangle}
+    }}
+
+    def Xform "Bolts"
+    {{
+        def Mesh "Steel"
+        {{
+            {triangle}
+        }}
+
+        def Mesh "Brass"
+        {{
+            {triangle}
+        }}
+    }}
+
+    def Mesh "Rim" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {{
+        {triangle}
+        rel material:binding = </Looks/Plain>
+
+        def Mesh "Inner"
+        {{
+            {triangle}
+        }}
+    }}
+}}
+
+def Scope "Looks"
+{{
+    def Material "Plain" {{}}
+    def Material "Rich" {{}}
+    def Material "Edge" {{}}
+}}
+"#
+    );
+    let scene = scene_of(text.as_bytes());
+    let bound = |path| {
+        let index = node(&scene, path).material.unwrap();
+        scene.materials[index].path.name().to_owned()
+    };
+    assert_eq!(
+        bound("/Shelf/Board"),
+        "Plain",
+        "its own binding beats an ancestor's collection"
+    );
+    assert_eq!(
+        bound("/Shelf/Loose"),
+        "Plain",
+        "not a member: the direct binding above"
+    );
+    assert_eq!(
+        bound("/Shelf/Bolts/Steel"),
+        "Rich",
+        "a member beneath one included"
+    );
+    assert_eq!(bound("/Shelf/Bolts/Brass"), "Plain", "excluded");
+    assert_eq!(
+        bound("/Shelf/Rim"),
+        "Edge",
+        "a stronger collection beats its own binding"
+    );
+    assert_eq!(
+        bound("/Shelf/Rim/Inner"),
+        "Plain",
+        "explicitOnly takes in only the paths named"
+    );
+    assert!(scene.warnings.is_empty(), "{:?}", scene.warnings);
 }
 
 #[test]

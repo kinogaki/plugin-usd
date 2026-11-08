@@ -516,7 +516,8 @@ fn a_material_keeps_its_sides_whatever_shows_it() {
     ];
     write_file(&path, &items, metres());
     let read = read_file(&path, metres(), false);
-    let mut sides: Vec<(&str, bool)> = (materials(&read).materials.iter())
+    let held = materials(&read);
+    let mut sides: Vec<(&str, bool)> = (held.materials.iter())
         .map(|m| (m.name.as_str(), m.double_sided))
         .collect();
     sides.sort();

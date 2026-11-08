@@ -260,6 +260,11 @@ fn a_domes_file_held_file_and_node_go_to_a_layer() {
         std::fs::read(dir.join("domes_textures/dusk.exr")).unwrap(),
         [9; 16]
     );
+    // Named file-relative, never as search paths.
+    let text = std::fs::read_to_string(&path).unwrap();
+    for asset in ["@./noon.exr@", "@./domes_textures/dusk.exr@"] {
+        assert!(text.contains(asset), "{asset} in\n{text}");
+    }
     let read = read_file(&path, metres(), false);
     let file = |name: &str| {
         let light = standard::light().get(item(&read, name).1.unwrap()).unwrap();

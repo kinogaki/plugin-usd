@@ -107,16 +107,34 @@ pub fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The materials item of a read.
-pub fn materials(read: &Imported) -> &Materials {
-    let item = read
-        .items
-        .first()
-        .and_then(|i| i.data.as_ref())
-        .expect("a first item");
-    standard::materials()
-        .get(item)
-        .expect("the materials item first")
+/// Every material of a read, its libraries' in their items' order.
+pub fn materials(read: &Imported) -> Materials {
+    let held = (read.items.iter())
+        .filter_map(|i| standard::materials().get(i.data.as_ref()?))
+        .flat_map(|m| m.materials.iter().cloned());
+    Materials {
+        materials: held.collect(),
+    }
+}
+
+/// Each library of a read: its path among the items, and its materials'
+/// names.
+pub fn libraries(read: &Imported) -> Vec<(String, Vec<String>)> {
+    let mut paths: Vec<String> = Vec::with_capacity(read.items.len());
+    let mut out = Vec::new();
+    for item in &read.items {
+        let above = item.parent.map_or("", |p| paths[p].as_str());
+        paths.push(format!("{above}/{}", item.name));
+        if let Some(held) = item
+            .data
+            .as_ref()
+            .and_then(|d| standard::materials().get(d))
+        {
+            let names = held.materials.iter().map(|m| m.name.clone()).collect();
+            out.push((paths.last().expect("its path").clone(), names));
+        }
+    }
+    out
 }
 
 /// The item named `name`, and its value.
