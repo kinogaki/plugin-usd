@@ -4,9 +4,16 @@
 //! The layer holds the stage metadata (`defaultPrim` the first top prim,
 //! `upAxis`, `metersPerUnit`), each node as its prim at the path its names
 //! give, placed by its local transform (`!resetXformStack!` kept), hidden
-//! with `visibility = invisible`, bound with `material:binding`; then the
-//! materials. An instance holds a copy of its prototype's prims; a point
-//! instancer holds its prototypes beneath it.
+//! with `visibility = invisible`, bound with `material:binding`
+//! (`bindMaterialAs = "strongerThanDescendants"` where it is stronger);
+//! then the prototypes instances show, then the materials.
+//!
+//! Instances are USD's own ([`Stored`]): each prototype an instance shows
+//! is written once, beneath the default prim's `Prototypes`, a `class`, so
+//! no traversal draws it in place (as `UsdGeomPointInstancer`'s schema
+//! advises, schema.usda:2104-2112), and every instance is an instanceable
+//! prim referencing it. A point instancer holds its prototypes beneath it,
+//! in a `Prototypes` scope.
 //!
 //! A usdz carries under `textures/` every asset held, and every file on
 //! disk that is a picture a usdz may pack ([`packable`]); a usda or usdc
@@ -18,7 +25,7 @@
 mod geometry;
 
 use kinogaki_studio_api::format::{Unique, files};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path as FilePath;
 use std::sync::Arc;
 
@@ -27,10 +34,11 @@ use crate::usd::error::{Error, Result};
 use crate::usd::layer_file::{Format, write_layer};
 use crate::usd::package::{Bytes, packable, write_usdz};
 use crate::usd::sdf::identifier::is_identifier;
-use crate::usd::sdf::{Array, LayerData, Path, Token, Value};
+use crate::usd::sdf::{Array, LayerData, LayerOffset, ListOp, Path, Reference, Token, Value};
 use crate::usd::shade;
 
-/// How deep instances may hold instances when written as copies.
+/// How deep point instancers may hold point instancers among their
+/// prototypes.
 const MOST_NESTING: usize = 64;
 
 /// The scene as a layer, its asset paths as they are.
@@ -68,8 +76,18 @@ fn author_with(scene: &Scene, asset: &dyn Fn(&Token) -> Token) -> Result<LayerDa
         UpAxis::Z => "Z",
     };
     author.layer_metadata("upAxis", Value::Token(Token::new(up)));
-    let writer = Writer { scene, asset };
+    let stored = Stored::of(scene)?;
+    let writer = Writer {
+        scene,
+        asset,
+        stored: &stored,
+    };
     writer.nodes(&mut author, &Path::absolute_root(), &scene.nodes, 0)?;
+    for (index, path) in &stored.prims {
+        author.class(&stored.holder);
+        author.prim(path, "Xform");
+        writer.nodes(&mut author, path, &scene.prototypes[*index].nodes, 0)?;
+    }
     for material in &scene.materials {
         shade::write(&mut author, material, asset)?;
     }
@@ -141,10 +159,87 @@ fn file_name(path: &str) -> &str {
     }
 }
 
+/// Where the prototypes instances show are written: each once, beneath
+/// `holder` (the default prim's child `Prototypes`, else its first free
+/// name), named after the first instance showing it, in the order the
+/// scene's nodes, then the prototypes' own, meet them.
+struct Stored {
+    holder: Path,
+    /// Each prototype and its prim, in the order met.
+    prims: Vec<(usize, Path)>,
+    /// Each prototype's place in `prims`.
+    at: HashMap<usize, usize>,
+}
+
+impl Stored {
+    /// Where `scene`'s prototypes are written.
+    ///
+    /// # Errors
+    /// An instance or point instancer naming a prototype that does not
+    /// exist.
+    fn of(scene: &Scene) -> Result<Stored> {
+        let top = scene.nodes.iter().position(|node| node.parent.is_none());
+        let default = top.map_or_else(Path::absolute_root, |t| {
+            Path::absolute_root().child(scene.nodes[t].name.clone())
+        });
+        // The names beneath the default prim: its children's, and the
+        // materials' scopes.
+        let mut taken = Unique::names();
+        let children = scene
+            .nodes
+            .iter()
+            .filter(|n| n.parent.is_some() && n.parent == top);
+        for node in children {
+            taken.take(&node.name);
+        }
+        for material in &scene.materials {
+            if let Some(child) = material.path.ancestors().find(|a| a.parent() == default) {
+                taken.take(child.name());
+            }
+        }
+        let mut stored = Stored {
+            holder: default.child(taken.take("Prototypes")),
+            prims: Vec::new(),
+            at: HashMap::new(),
+        };
+        let mut names = Unique::names();
+        let mut walked = HashSet::new();
+        let mut queue: Vec<&[Node]> = vec![&scene.nodes];
+        let mut next = 0;
+        while let Some(&nodes) = queue.get(next) {
+            next += 1;
+            for node in nodes {
+                let mut shown = Vec::new();
+                if let Some(index) = node.instance {
+                    if !stored.at.contains_key(&index) {
+                        let path = stored.holder.child(names.take(&node.name));
+                        stored.at.insert(index, stored.prims.len());
+                        stored.prims.push((index, path));
+                    }
+                    shown.push(index);
+                }
+                if let NodeKind::Instancer(instancer) = &node.kind {
+                    shown.extend(&instancer.prototypes);
+                }
+                for index in shown {
+                    let prototype = scene.prototypes.get(index).ok_or_else(|| {
+                        Error::invalid(format!("{}: prototype {index} does not exist", node.name))
+                    })?;
+                    if walked.insert(index) {
+                        queue.push(&prototype.nodes);
+                    }
+                }
+            }
+        }
+        Ok(stored)
+    }
+}
+
 /// Authoring a scene's nodes.
 struct Writer<'a> {
     scene: &'a Scene,
     asset: &'a dyn Fn(&Token) -> Token,
+    stored: &'a Stored,
 }
 
 impl Writer<'_> {
@@ -184,7 +279,7 @@ impl Writer<'_> {
         Ok(parent.child(name.clone()))
     }
 
-    /// Author one node at `path`, with its instance's copy.
+    /// Author one node at `path`, an instance referencing its prototype.
     fn node(&self, author: &mut Author, path: &Path, node: &Node, depth: usize) -> Result<()> {
         match &node.kind {
             NodeKind::Group => {
@@ -214,18 +309,38 @@ impl Writer<'_> {
             let hidden = Value::Token(Token::new("invisible"));
             author.attribute(path, "visibility", "token", hidden, false);
         }
-        self.bind(author, path, node.material)?;
+        self.bind(author, path, node.material, node.stronger)?;
         if let Some(index) = node.instance {
-            let prototype = self.scene.prototypes.get(index).ok_or_else(|| {
-                Error::invalid(format!("{path}: prototype {index} does not exist"))
-            })?;
-            self.nodes(author, path, &prototype.nodes, depth + 1)?;
+            let at = self.stored.at[&index];
+            let reference = Reference {
+                asset: Token::empty(),
+                prim: self.stored.prims[at].1.clone(),
+                offset: LayerOffset::IDENTITY,
+                custom_data: Default::default(),
+            };
+            let references = ListOp {
+                prepended: vec![reference],
+                ..ListOp::default()
+            };
+            author.prim_metadata(path, "instanceable", Value::Bool(true));
+            author.prim_metadata(
+                path,
+                "references",
+                Value::ReferenceListOp(Arc::new(references)),
+            );
         }
         Ok(())
     }
 
-    /// Bind material `material` (an index into the scene's) to `prim`.
-    fn bind(&self, author: &mut Author, prim: &Path, material: Option<usize>) -> Result<()> {
+    /// Bind material `material` (an index into the scene's) to `prim`,
+    /// `stronger` than its descendants' bindings when so.
+    fn bind(
+        &self,
+        author: &mut Author,
+        prim: &Path,
+        material: Option<usize>,
+        stronger: bool,
+    ) -> Result<()> {
         let Some(index) = material else {
             return Ok(());
         };
@@ -235,6 +350,14 @@ impl Writer<'_> {
             })?;
         author.api_schema(prim, "MaterialBindingAPI");
         author.relationship(prim, "material:binding", vec![material.path.clone()]);
+        if stronger {
+            let strength = Value::Token(Token::new("strongerThanDescendants"));
+            author.property_metadata(
+                &prim.property("material:binding"),
+                "bindMaterialAs",
+                strength,
+            );
+        }
         Ok(())
     }
 }

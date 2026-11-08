@@ -7,31 +7,32 @@
 //! file holding them), its materials in that prim's `Looks`. Each item is
 //! its prim, placed relative to its parent's: polygons and curves
 //! ([`geometry`]), what the host makes polygons of (a B-rep), lights and
-//! cameras ([`crate::lights`]), and instances as copies of their
-//! prototypes, each instance's material bound on its copy; an instance
-//! whose `material_map` renders the prototype's materials as others places
-//! a prototype written in those, once a map.
+//! cameras ([`crate::lights`]), and instances as USD's instancing
+//! ([`instances`]). A value several items show (copies sharing one) is
+//! written once, as a prototype each of their prims is an instance of.
 mod assets;
 mod geometry;
+mod instances;
 mod materials;
 mod preview;
 
 use crate::lights;
 use crate::names;
 use crate::space::matrix;
-use crate::usd::scene::{Matrix4d, Node, NodeKind, Prototype, Scene, UpAxis as StageUp};
+use crate::usd::scene::{Instancer, Matrix4d, Node, NodeKind, Scene, UpAxis as StageUp};
 use crate::usd::sdf::{Path, Token};
 use assets::Assets;
 use geometry::Shaping;
+use instances::Shows;
 use kinogaki_render_api::standard::LightShape;
 use kinogaki_studio_api::format::Unique;
-use kinogaki_studio_api::geometry::{Domain, UpAxis, names as standard_names};
-use kinogaki_studio_api::standard::{self, Instances};
+use kinogaki_studio_api::geometry::{UpAxis, Xform};
+use kinogaki_studio_api::standard;
 use kinogaki_studio_api::value::ImageRef;
 use kinogaki_studio_api::{
     Data, DataTypeId, Diagnostic, Error, FileItem, FormatOptions, FormatWriter, Writing,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path as FilePath;
 use std::sync::{Arc, LazyLock};
 
@@ -69,7 +70,8 @@ impl FormatWriter for Writer {
             assets: Assets::of(path),
             materials: HashMap::new(),
             double_sided: Vec::new(),
-            prototypes: Vec::new(),
+            stored: HashMap::new(),
+            shared: shared(items),
             writing,
             warnings: Vec::new(),
         };
@@ -102,6 +104,10 @@ impl FormatWriter for Writer {
             ..Node::group(&root_name, None)
         });
         // Each item's node, under its parent's (the root's for the top ones).
+        let mut parents = vec![false; items.len()];
+        for parent in items.iter().filter_map(|i| i.parent) {
+            parents[parent] = true;
+        }
         let mut node_of: Vec<Option<usize>> = vec![None; items.len()];
         let mut children: HashMap<usize, Unique> = HashMap::from([(0, root_children)]);
         for (i, item) in items.iter().enumerate() {
@@ -115,12 +121,8 @@ impl FormatWriter for Writer {
             }
             let parent = item.parent.and_then(|p| node_of[p]).unwrap_or(0);
             let name = (children.entry(parent).or_default()).take(&names::identifier(&item.name));
-            node_of[i] = Some(out.item(item, &name, parent)?);
+            node_of[i] = Some(out.item(item, &name, parent, parents[i])?);
         }
-        out.scene.prototypes = std::mem::take(&mut out.prototypes)
-            .into_iter()
-            .map(|(_, p)| p)
-            .collect();
         let (assets, unpacked) = std::mem::replace(&mut out.assets, Assets::of(path)).assets();
         out.scene.assets = assets;
         out.warnings.extend(unpacked);
@@ -136,6 +138,25 @@ fn is_materials(item: &FileItem) -> bool {
     (item.data.as_ref()).is_some_and(|d| standard::materials().get(d).is_some())
 }
 
+/// The values (by identity) several of `items` show that a prototype can
+/// hold (not instances, lights, cameras or materials): each written once.
+fn shared(items: &[FileItem]) -> HashSet<usize> {
+    let mut seen = HashSet::new();
+    let mut shared = HashSet::new();
+    for data in items.iter().filter_map(|i| i.data.as_ref()) {
+        let other = [
+            standard::instances().id(),
+            standard::light().id(),
+            standard::camera().id(),
+            standard::materials().id(),
+        ];
+        if !other.contains(&data.ty()) && !seen.insert(data.identity()) {
+            shared.insert(data.identity());
+        }
+    }
+    shared
+}
+
 /// What a value is written as.
 enum Kinds {
     /// Prims of its own: the item's (an empty suffix), then children, each
@@ -143,8 +164,12 @@ enum Kinds {
     Prims(Vec<(&'static str, NodeKind, Option<usize>)>),
     /// One prim's kind.
     One(NodeKind),
-    /// Copies of prototypes, children of the item's prim.
-    Instances(Vec<Node>),
+    /// An instance of a prototype.
+    Instance(Shows),
+    /// Instances placed by a point instancer.
+    Instancer(Instancer),
+    /// Instances each a prim of its own.
+    Instances(Vec<Shows>),
 }
 
 /// The scene being written.
@@ -155,16 +180,20 @@ struct Out<'w> {
     materials: HashMap<Arc<str>, usize>,
     /// Whether each of the scene's materials is double-sided.
     double_sided: Vec<bool>,
-    /// Each prototype written, by what it is written of.
-    prototypes: Vec<(Of, Prototype)>,
+    /// Each prototype written (an index into the scene's; none for a
+    /// value nothing here writes), by what it is written of.
+    stored: HashMap<Of, Option<usize>>,
+    /// The values several items show ([`shared`]).
+    shared: HashSet<usize>,
     writing: &'w Writing<'w>,
     warnings: Vec<String>,
 }
 
-/// What a prototype is written of: a value, and the material map its
-/// instances render it with (pairs of a material its primitives name and
-/// the one they render with; empty: its own materials).
-type Of = (Data, Vec<(String, String)>);
+/// What a prototype is written of: a value (by its identity), and the
+/// material map its instances render it with (pairs of a material its
+/// primitives name and the one they render with; empty: its own
+/// materials).
+type Of = (usize, Vec<(String, String)>);
 
 impl Out<'_> {
     /// The materials and images `item` holds, the materials under `looks`.
@@ -189,8 +218,16 @@ impl Out<'_> {
         Ok(())
     }
 
-    /// `item` as the node `name` under node `parent`; its index.
-    fn item(&mut self, item: &FileItem, name: &str, parent: usize) -> Result<usize, Error> {
+    /// `item` as the node `name` under node `parent`; its index. An item
+    /// with children (`parent_of`) holds an instance or a point instancer
+    /// in a child prim, as an instance's prim holds nothing of its own.
+    fn item(
+        &mut self,
+        item: &FileItem,
+        name: &str,
+        parent: usize,
+        parent_of: bool,
+    ) -> Result<usize, Error> {
         let mut node = Node {
             transform: matrix(&item.placement),
             visible: item.visible,
@@ -199,6 +236,16 @@ impl Out<'_> {
         let at = self.scene.nodes.len();
         let mut children: Vec<Node> = Vec::new();
         let kinds = match &item.data {
+            Some(data) if self.shared.contains(&data.identity()) => (self.prototype(data, &[])?)
+                .map(|prototype| {
+                    Kinds::Instance(Shows {
+                        prototype,
+                        xform: Xform::IDENTITY,
+                        material: None,
+                        stronger: false,
+                        name: name.to_owned(),
+                    })
+                }),
             Some(data) => self.kinds(data, &[], &item.name)?,
             None => None,
         };
@@ -219,11 +266,28 @@ impl Out<'_> {
                 }
             }
             Some(Kinds::One(kind)) => node.kind = kind,
-            Some(Kinds::Instances(copies)) => {
-                children.extend(copies.into_iter().map(|copy| Node {
-                    parent: Some(at),
-                    ..copy
-                }));
+            Some(Kinds::Instance(shows)) if !parent_of => {
+                let placement = item.placement.compose(&shows.xform);
+                node = Node {
+                    transform: matrix(&placement),
+                    ..shows.node(name, Some(parent))
+                };
+                node.visible = item.visible;
+            }
+            Some(Kinds::Instancer(instancer)) if !parent_of => {
+                node.kind = NodeKind::Instancer(Box::new(instancer));
+            }
+            Some(Kinds::Instance(shows)) => children.push(shows.node("Instance", Some(at))),
+            Some(Kinds::Instancer(instancer)) => children.push(Node {
+                kind: NodeKind::Instancer(Box::new(instancer)),
+                ..Node::group("Instances", Some(at))
+            }),
+            Some(Kinds::Instances(each)) => {
+                let mut names = Unique::default();
+                for shows in each {
+                    let name = names.take(&shows.name);
+                    children.push(shows.node(&name, Some(at)));
+                }
             }
             None => {}
         }
@@ -242,7 +306,7 @@ impl Out<'_> {
         name: &str,
     ) -> Result<Option<Kinds>, Error> {
         if let Some(instances) = standard::instances().get(data) {
-            return Ok(Some(Kinds::Instances(self.copies(instances)?)));
+            return self.instances(instances, name);
         }
         if let Some(light) = standard::light().get(data) {
             let texture = match &light.shape {
@@ -305,86 +369,5 @@ impl Out<'_> {
                 None
             }
         }
-    }
-
-    /// `instances` as copies: a node a placement, showing its prototype,
-    /// binding the instance's material.
-    fn copies(&mut self, instances: &Instances) -> Result<Vec<Node>, Error> {
-        let attributes = instances.attributes();
-        let named = attributes.text(Domain::Instance, standard_names::NAME);
-        let bound = attributes.text(Domain::Instance, standard_names::MATERIAL);
-        let mut prototypes = Vec::with_capacity(instances.prototypes().len());
-        for prototype in instances.prototypes().iter() {
-            prototypes.push(self.prototype(prototype, &[])?);
-        }
-        let mut names = Unique::default();
-        let mut copies = Vec::with_capacity(instances.len());
-        for i in 0..instances.len() {
-            let key = bound.and_then(|b| b.get(i));
-            let map = standard::material_map(attributes, i);
-            let at = instances.prototype_index(i);
-            let prototype = match key.is_none() && !map.is_empty() {
-                // A map: the prototype written in the materials it maps to.
-                true => self.prototype(&instances.prototypes()[at], &map)?,
-                false => prototypes[at],
-            };
-            let Some(prototype) = prototype else {
-                continue;
-            };
-            let name = named.and_then(|n| n.get(i)).filter(|n| !n.is_empty());
-            let name = names.take(&names::identifier(name.unwrap_or("instance")));
-            copies.push(Node {
-                transform: matrix(&instances.xforms()[i]),
-                instance: Some(prototype),
-                material: key.and_then(|key| self.materials.get(key).copied()),
-                ..Node::group(&name, None)
-            });
-        }
-        Ok(copies)
-    }
-
-    /// The prototype `value` is, rendered through `map` (pairs of a
-    /// material its primitives name and the one they render with instead),
-    /// written once; none for a value nothing here writes.
-    fn prototype(&mut self, value: &Data, map: &[(&str, &str)]) -> Result<Option<usize>, Error> {
-        let mapped: Vec<(String, String)> = (map.iter())
-            .map(|&(from, to)| (from.to_owned(), to.to_owned()))
-            .collect();
-        if let Some(at) =
-            (self.prototypes.iter()).position(|((held, by), _)| held.ptr_eq(value) && *by == mapped)
-        {
-            return Ok(Some(at));
-        }
-        let nodes = match self.kinds(value, map, "a prototype")? {
-            Some(Kinds::Prims(prims)) => {
-                let mut names = Unique::default();
-                (prims.into_iter())
-                    .map(|(suffix, kind, material)| Node {
-                        kind,
-                        material,
-                        ..Node::group(
-                            &names.take(if suffix.is_empty() {
-                                "Geometry"
-                            } else {
-                                suffix
-                            }),
-                            None,
-                        )
-                    })
-                    .collect()
-            }
-            Some(Kinds::One(kind)) => vec![Node {
-                kind,
-                ..Node::group("Prototype", None)
-            }],
-            Some(Kinds::Instances(copies)) => copies,
-            None => return Ok(None),
-        };
-        let prototype = Prototype {
-            root: Path::absolute_root(),
-            nodes,
-        };
-        self.prototypes.push(((value.clone(), mapped), prototype));
-        Ok(Some(self.prototypes.len() - 1))
     }
 }

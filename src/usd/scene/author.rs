@@ -55,6 +55,16 @@ impl Author {
     /// `def <type_name> "<name>"` at `path`, with its ancestors made as
     /// `def Xform` prims when missing. Returns whether it was new.
     pub fn prim(&mut self, path: &Path, type_name: &str) -> bool {
+        self.spec(path, Specifier::Def, type_name)
+    }
+
+    /// `class "<name>"` at `path`, with its ancestors made as `def Xform`
+    /// prims when missing. Returns whether it was new.
+    pub fn class(&mut self, path: &Path) -> bool {
+        self.spec(path, Specifier::Class, "")
+    }
+
+    fn spec(&mut self, path: &Path, specifier: Specifier, type_name: &str) -> bool {
         if self.layer.has_spec(path) {
             return false;
         }
@@ -63,7 +73,7 @@ impl Author {
             self.prim(&parent, "Xform");
         }
         let spec = self.layer.create_spec(path.clone(), SpecType::Prim);
-        spec.set(field::SPECIFIER, Value::Specifier(Specifier::Def));
+        spec.set(field::SPECIFIER, Value::Specifier(specifier));
         if !type_name.is_empty() {
             spec.set(field::TYPE_NAME, Value::Token(Token::new(type_name)));
         }

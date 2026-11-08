@@ -1,7 +1,7 @@
 //! Items written and read back through the format: polygons with their
 //! attributes, bindings and groups where they were, in any project's
-//! units; curves; instances as copies, each with its own material; lights
-//! and cameras; a dome naming an image of the file's.
+//! units; curves; lights and cameras; a dome naming an image of the
+//! file's. Instances are `instances.rs`'s.
 use crate::support::{
     Doubling, Scratch, item, materials, metres, read_file, read_in, square, write_file, write_in,
 };
@@ -11,11 +11,11 @@ use kinogaki_studio_api::FileItem;
 use kinogaki_studio_api::geometry::EmbeddedFile;
 use kinogaki_studio_api::geometry::image::{ImageFile, ImageSource};
 use kinogaki_studio_api::geometry::{
-    Attribute, Attributes, Basis, Column, CurveData, Domain, Elements, Geometry, Kind, Knots,
-    Primitives, Text, Units, UpAxis, Vec3, Xform, names,
+    Attributes, Basis, CurveData, Domain, Elements, Geometry, Kind, Knots, Primitives, Units,
+    UpAxis, Vec3, Xform, names,
 };
 use kinogaki_studio_api::network::{NetworkSeed, NewNode};
-use kinogaki_studio_api::standard::{self, ImportedMaterial, Instances, Materials};
+use kinogaki_studio_api::standard::{self, ImportedMaterial, Materials};
 use kinogaki_studio_api::value::ImageRef;
 use std::sync::Arc;
 
@@ -152,119 +152,6 @@ fn curves_come_back_of_their_basis() {
             Kind::curve(Basis::Nurbs, false)
         ]
     );
-}
-
-#[test]
-fn instances_are_written_as_copies_each_with_its_material() {
-    let dir = Scratch::new("copies");
-    let path = dir.join("row.usda");
-    let leaf = standard::geometry().wrap(square(""));
-    let xforms: Vec<Xform> = (0..3)
-        .map(|i| Xform::translation(Vec3::new(i as f64, 0.0, 0.0)))
-        .collect();
-    let bound = Text::new(
-        vec![0, 1, 0].into(),
-        [Arc::from("/Looks/Red"), Arc::from("/Looks/Blue")].into(),
-    )
-    .unwrap();
-    let attributes = Attributes::new()
-        .with(Domain::Instance, names::MATERIAL, Attribute::text(bound))
-        .unwrap();
-    let row = Instances::new(vec![leaf], Column::new(xforms), None, attributes).unwrap();
-    let items = [
-        looks(vec![
-            plain("/Looks/Red", "Red"),
-            plain("/Looks/Blue", "Blue"),
-        ]),
-        FileItem::top("Row", standard::instances().wrap(row)),
-    ];
-    write_file(&path, &items, metres());
-    let read = read_file(&path, metres(), false);
-    let keys: Vec<&str> = materials(&read)
-        .materials
-        .iter()
-        .map(|m| m.key.as_str())
-        .collect();
-    let copies: Vec<&FileItem> = read
-        .items
-        .iter()
-        .filter(|i| i.name.starts_with("instance"))
-        .collect();
-    assert_eq!(copies.len(), 3);
-    for (k, copy) in copies.iter().enumerate() {
-        assert_eq!(copy.placement.origin(), Vec3::new(k as f64, 0.0, 0.0));
-    }
-    // Each copy's polygons show the material its instance bound.
-    let shown: Vec<String> = (read.items.iter())
-        .filter(|i| {
-            i.parent
-                .is_some_and(|p| read.items[p].name.starts_with("instance"))
-        })
-        .filter_map(|i| standard::geometry().get(i.data.as_ref()?))
-        .map(|g| {
-            g.attributes()
-                .text(Domain::Primitive, names::MATERIAL)
-                .unwrap()
-                .get(0)
-                .unwrap()
-                .to_owned()
-        })
-        .collect();
-    assert_eq!(shown, [keys[0], keys[1], keys[0]]);
-}
-
-/// An instance whose `material_map` renders its prototype's Red as Blue
-/// places a prototype written in Blue; the others keep the one in Red.
-#[test]
-fn an_instances_material_map_writes_a_prototype_in_its_materials() {
-    use kinogaki_studio_api::geometry::{AttributeType, Values};
-    let dir = Scratch::new("mapped");
-    let path = dir.join("mapped.usda");
-    let leaf = standard::geometry().wrap(square("/Looks/Red"));
-    let xforms: Vec<Xform> = (0..3)
-        .map(|i| Xform::translation(Vec3::new(i as f64, 0.0, 0.0)))
-        .collect();
-    let ty = AttributeType {
-        array: true,
-        ..AttributeType::TEXT
-    };
-    let pairs = Values::Text(Text::from_strs(["/Looks/Red", "/Looks/Blue"]));
-    let map = Attribute::arrays(ty, vec![0, 0, 2, 2].into(), pairs).unwrap();
-    let attributes = (Attributes::new())
-        .with(Domain::Instance, names::MATERIAL_MAP, map)
-        .unwrap();
-    let row = Instances::new(vec![leaf], Column::new(xforms), None, attributes).unwrap();
-    let items = [
-        looks(vec![
-            plain("/Looks/Red", "Red"),
-            plain("/Looks/Blue", "Blue"),
-        ]),
-        FileItem::top("Row", standard::instances().wrap(row)),
-    ];
-    write_file(&path, &items, metres());
-    let read = read_file(&path, metres(), false);
-    let keys: Vec<&str> = (materials(&read).materials.iter())
-        .map(|m| m.key.as_str())
-        .collect();
-    let shown: Vec<String> = (read.items.iter())
-        .filter(|i| (i.parent).is_some_and(|p| read.items[p].name.starts_with("instance")))
-        .filter_map(|i| standard::geometry().get(i.data.as_ref()?))
-        .map(|g| {
-            let named = g.attributes().text(Domain::Primitive, names::MATERIAL);
-            named.unwrap().get(0).unwrap().to_owned()
-        })
-        .collect();
-    assert_eq!(shown.len(), 3);
-    assert_eq!(shown[0], shown[2], "the unmapped share the prototype's");
-    assert_ne!(shown[1], shown[0], "the mapped one's own");
-    let name = |key: &str| {
-        (materials(&read).materials.iter())
-            .find(|m| m.key == key)
-            .map(|m| m.name.clone())
-    };
-    assert_eq!(name(&shown[1]).as_deref(), Some("Blue"));
-    assert_eq!(name(&shown[0]).as_deref(), Some("Red"));
-    assert_eq!(keys.len(), 2);
 }
 
 #[test]

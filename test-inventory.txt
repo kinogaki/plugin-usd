@@ -4,10 +4,8 @@ kinogaki-usd/format hand materials::hand_run_usdchecker_arkit_passes_materialx_a
 kinogaki-usd/format hand measure::hand_run_the_grid_reads_and_writes_within_its_budgets
 kinogaki-usd/format hand measure::hand_run_the_kitchen_set_imports_within_its_budget
 kinogaki-usd/format test export::a_domes_file_held_file_and_node_go_to_a_layer
-kinogaki-usd/format test export::an_instances_material_map_writes_a_prototype_in_its_materials
 kinogaki-usd/format test export::colors_are_written_in_linear_rec709_as_other_applications_read_them
 kinogaki-usd/format test export::curves_come_back_of_their_basis
-kinogaki-usd/format test export::instances_are_written_as_copies_each_with_its_material
 kinogaki-usd/format test export::lights_cameras_and_a_domes_image_come_back
 kinogaki-usd/format test export::polygons_come_back_where_they_were_in_any_units
 kinogaki-usd/format test hostile::a_dictionary_shared_by_its_entries_decodes_once
@@ -38,6 +36,12 @@ kinogaki-usd/format test import::damaged_files_fail_and_a_cancelled_read_stops
 kinogaki-usd/format test import::instances_share_one_prototype_and_point_instancers_place_theirs
 kinogaki-usd/format test import::the_import_dialog_offers_embed_textures_off
 kinogaki-usd/format test import::units_scale_points_and_lengths_but_no_placement
+kinogaki-usd/format test instances::a_files_instancing_survives_import_export_and_import
+kinogaki-usd/format test instances::a_material_map_shows_a_prototype_written_in_its_materials
+kinogaki-usd/format test instances::a_prototypes_invisible_prims_and_other_families_bindings_show_nothing
+kinogaki-usd/format test instances::a_shear_leaves_its_instances_instanceable_prims_of_their_own
+kinogaki-usd/format test instances::one_instance_and_shared_values_are_instanceable_prims_of_one_prototype
+kinogaki-usd/format test instances::several_instances_are_a_point_instancer_of_one_prototype_written_once
 kinogaki-usd/format test lights::shaping_the_standard_light_cant_hold_is_said_once_a_light
 kinogaki-usd/format test lights::unauthored_intensities_are_each_kinds_fallback
 kinogaki-usd/format test materials::a_material_keeps_its_sides_whatever_shows_it
@@ -125,8 +129,9 @@ kinogaki-usd/model test instancing::a_files_own_flattened_prototypes_are_its_pri
 kinogaki-usd/model test instancing::a_point_instancer_places_its_prototypes
 kinogaki-usd/model test instancing::a_point_instancer_writes_and_reads_back
 kinogaki-usd/model test instancing::a_prototype_holding_itself_is_refused
+kinogaki-usd/model test instancing::a_stronger_binding_writes_and_reads_back_stronger
 kinogaki-usd/model test instancing::instanceable_prims_share_one_prototype
-kinogaki-usd/model test instancing::instances_write_as_copies
+kinogaki-usd/model test instancing::instances_write_as_instances_of_their_prototype_written_once
 kinogaki-usd/model test package::a_file_in_memory_reads_nothing_from_disk
 kinogaki-usd/model test package::a_loose_layer_names_held_assets_as_authored_and_writes_nothing_beside_it
 kinogaki-usd/model test package::a_package_inside_a_package_is_read_through

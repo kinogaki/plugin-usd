@@ -176,7 +176,7 @@ impl Writer<'_> {
                 );
             }
             author.attribute(&at, "indices", "int[]", ints(&subset.indices), false);
-            self.bind(author, &at, subset.material)?;
+            self.bind(author, &at, subset.material, false)?;
         }
         Ok(())
     }
@@ -354,10 +354,15 @@ impl Writer<'_> {
         );
         let positions = Value::Array(Array::Vec3f(instancer.positions.clone()));
         author.attribute(path, "positions", "point3f[]", positions, false);
+        // Both: `orientationsf` holds them whole (OpenUSD 24.05 on, which
+        // takes it over the other), the half-precision `orientations` for
+        // readers before it.
         if let Some(orientations) = &instancer.orientations {
             let halves = orientations.iter().map(|q| q.map(Half::from_f32)).collect();
             let value = Value::Array(Array::Quath(Arc::new(halves)));
             author.attribute(path, "orientations", "quath[]", value, false);
+            let whole = Value::Array(Array::Quatf(orientations.clone()));
+            author.attribute(path, "orientationsf", "quatf[]", whole, false);
         }
         if let Some(scales) = &instancer.scales {
             let value = Value::Array(Array::Vec3f(scales.clone()));

@@ -2,7 +2,8 @@
 //! theirs, and both write back.
 
 use crate::common::{node, paths, round_trips, scene_of};
-use kinogaki_usd::usd::scene::{Matrix4d, NodeKind};
+use kinogaki_usd::usd::scene::{self, Matrix4d, NodeKind};
+use kinogaki_usd::usd::{Format, layer_bytes};
 
 const INSTANCEABLE: &[u8] = br#"#usda 1.0
 def Xform "Asset"
@@ -67,11 +68,24 @@ fn instanceable_prims_share_one_prototype() {
     assert!(matches!(prototype.nodes[0].kind, NodeKind::Mesh(_)));
 }
 
+/// Written back, each instance references its prototype, written once
+/// beneath the default prim's `Prototypes` class, and binds what it bound.
 #[test]
-fn instances_write_as_copies() {
+fn instances_write_as_instances_of_their_prototype_written_once() {
     let scene = scene_of(INSTANCEABLE);
+    let layer =
+        String::from_utf8(layer_bytes(&scene::author(&scene).unwrap(), Format::Usda).unwrap())
+            .unwrap();
+    assert!(layer.contains("class \"Prototypes\""), "{layer}");
+    assert_eq!(
+        layer
+            .matches("prepend references = </Asset/Prototypes/One>")
+            .count(),
+        2,
+        "{layer}"
+    );
     for again in round_trips(&scene) {
-        assert!(again.prototypes.is_empty());
+        assert_eq!(again.prototypes.len(), 1);
         assert_eq!(
             paths(&again),
             [
@@ -79,18 +93,36 @@ fn instances_write_as_copies() {
                 "/Asset/Part",
                 "/Shelf",
                 "/Shelf/One",
-                "/Shelf/One/Part",
-                "/Shelf/Two",
-                "/Shelf/Two/Part"
+                "/Shelf/Two"
             ]
         );
-        let copy = crate::common::mesh(&again, "/Shelf/Two/Part");
-        let NodeKind::Mesh(part) = &scene.prototypes[0].nodes[0].kind else {
-            panic!("a mesh")
+        let (one, two) = (node(&again, "/Shelf/One"), node(&again, "/Shelf/Two"));
+        assert_eq!((one.instance, two.instance), (Some(0), Some(0)));
+        assert_eq!((one.material, two.material), (None, Some(0)));
+        assert_eq!(one.transform, Matrix4d::translation(5.0, 0.0, 0.0));
+        let (NodeKind::Mesh(copy), NodeKind::Mesh(part)) = (
+            &again.prototypes[0].nodes[0].kind,
+            &scene.prototypes[0].nodes[0].kind,
+        ) else {
+            panic!("meshes")
         };
         assert_eq!(copy.points, part.points);
-        // The copy binds what its instance bound.
-        assert_eq!(node(&again, "/Shelf/Two/Part").material, Some(0));
+    }
+}
+
+/// A binding stronger than descendants is written stronger and read back
+/// so, on an instance as anywhere.
+#[test]
+fn a_stronger_binding_writes_and_reads_back_stronger() {
+    let mut scene = scene_of(INSTANCEABLE);
+    let at = (scene.nodes.iter())
+        .position(|n| n.name.as_str() == "Two")
+        .unwrap();
+    scene.nodes[at].stronger = true;
+    for again in round_trips(&scene) {
+        let two = node(&again, "/Shelf/Two");
+        assert!(two.stronger && two.material == Some(0));
+        assert!(!node(&again, "/Shelf/One").stronger);
     }
 }
 

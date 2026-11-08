@@ -131,10 +131,15 @@ pub struct Node {
     /// The material bound to it (UsdShade's resolution, ancestors
     /// included), an index into [`Scene::materials`], on prims that show
     /// geometry. On an instance or a point instancer, it is what the
-    /// prototypes' prims bind when they bind nothing themselves.
+    /// prototypes' prims bind when they bind nothing themselves, or
+    /// whatever they bind when it is [`stronger`](Self::stronger).
     pub material: Option<usize>,
+    /// Whether `material` is bound `strongerThanDescendants`: it binds the
+    /// prims beneath, an instance's prototype's too, whatever they bind.
+    pub stronger: bool,
     /// The prototype this instanceable prim shows beneath itself, an index
-    /// into [`Scene::prototypes`].
+    /// into [`Scene::prototypes`]. Written, the prim is instanceable and
+    /// references the prototype, authored once ([`author`]).
     pub instance: Option<usize>,
     /// What it holds.
     pub kind: NodeKind,
@@ -151,6 +156,7 @@ impl Node {
             resets_transform: false,
             visible: true,
             material: None,
+            stronger: false,
             instance: None,
             kind: NodeKind::Group,
         }
@@ -179,12 +185,14 @@ pub enum NodeKind {
 }
 
 /// Prims instances share: an instanceable prim's descendants, or a point
-/// instancer's prototype prim with its own.
+/// instancer's prototype prim with its own. Written, a prototype instances
+/// show is authored once, beneath the default prim's `Prototypes` class,
+/// and a point instancer's beneath it ([`author`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prototype {
     /// The path its top prims are children of on the stage: the instance
     /// its prims are read from (an instanceable prim's prototype), or the
-    /// point instancer it is a prototype of.
+    /// point instancer it is a prototype of. Writing chooses its own.
     pub root: Path,
     /// Its prims, parents before children; the ones at the top are placed
     /// by what shows the prototype.

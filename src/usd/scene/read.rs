@@ -80,7 +80,7 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
             paths: Vec::new(),
         },
         prototypes: Vec::new(),
-        prototype_at: PathMap::default(),
+        prototype_at: [PathMap::default(), PathMap::default()],
         reading: Vec::new(),
         materials: Vec::new(),
         material_at: PathMap::default(),
@@ -184,7 +184,10 @@ struct Walker<'a> {
     time: Time,
     assets: AssetPaths<'a>,
     prototypes: Vec<Prototype>,
-    prototype_at: PathMap<usize>,
+    /// Each prototype read, by its source: an instance's (its children)
+    /// first, a point instancer's prototype prim (itself) second. One prim
+    /// can be both: a point instancer's prototype that is an instance.
+    prototype_at: [PathMap<usize>; 2],
     /// The prototypes being read, innermost last.
     reading: Vec<usize>,
     materials: Vec<Material>,
@@ -291,6 +294,7 @@ impl Walker<'_> {
             resets_transform: local.resets,
             visible: token_at(self.layer, path, "visibility", "inherited").as_str() != "invisible",
             material: binding.filter(|_| shows_material).map(|b| b.material),
+            stronger: binding.is_some_and(|b| shows_material && b.stronger),
             instance,
             kind,
         });
@@ -313,9 +317,13 @@ impl Walker<'_> {
         let (layer, time) = (self.layer, self.time);
         let read = match type_name.as_str() {
             "Mesh" => mesh::read(layer, path, time, &mut self.warnings).map(|mut mesh| {
+                // A subset's binding counts in the materialBind family alone
+                // (UsdShadeMaterialBindingAPI, materialBindingAPI.h:867-876).
                 for subset in &mut mesh.subsets {
-                    let own = self.binding(&path.child(subset.name.clone()));
-                    subset.material = own.map(|b| b.material);
+                    if subset.family.as_str() == "materialBind" {
+                        let own = self.binding(&path.child(subset.name.clone()));
+                        subset.material = own.map(|b| b.material);
+                    }
                 }
                 NodeKind::Mesh(Box::new(mesh))
             }),
@@ -391,7 +399,7 @@ impl Walker<'_> {
         whole: bool,
         depth: usize,
     ) -> std::result::Result<usize, String> {
-        if let Some(&known) = self.prototype_at.get(source) {
+        if let Some(&known) = self.prototype_at[usize::from(whole)].get(source) {
             if self.reading.contains(&known) {
                 return Err(format!("its prototype {source} holds itself"));
             }
@@ -407,7 +415,7 @@ impl Walker<'_> {
             root,
             nodes: Vec::new(),
         });
-        self.prototype_at.insert(source.clone(), index);
+        self.prototype_at[usize::from(whole)].insert(source.clone(), index);
         self.reading.push(index);
         let mut nodes = Vec::new();
         let top = Inherited {

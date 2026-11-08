@@ -10,8 +10,12 @@
 //! - **Instances.** A prototype is held once as one value (its geometry
 //!   gathered, the prototypes it shows nested as instances, at most
 //!   [`MAX_DEPTH`] deep); an instanceable prim and a point instancer place
-//!   it. An instance binding a material the prototype's prims leave to it
-//!   names it on the Instance domain.
+//!   it. A point instancer's prototype that is an instance of another
+//!   (placed where the instancer puts it, holding nothing else) is that
+//!   other, as Export writes them. An instance binding a material the
+//!   prototype's prims leave to it, or one stronger than theirs, names it
+//!   on the Instance domain; a point instancer's `ids`, `velocities` and
+//!   `displayColor` are its instances' `id`, `v` and `Cd`.
 mod files;
 mod geometry;
 mod materials;
@@ -20,15 +24,18 @@ mod primvars;
 use crate::lights;
 use crate::space;
 use crate::usd::package::Bytes;
-use crate::usd::scene::{Instancer, Node, NodeKind, ReadOptions, Scene};
+use crate::usd::scene::{Instancer, Matrix4d, Node, NodeKind, ReadOptions, Scene};
 use crate::usd::sdf::Path;
 use crate::usd::{ErrorKind, Stage, StageOptions};
 use files::{Files, Held};
 use geometry::Shaping;
+use kinogaki_studio_api::color::LIN_REC709;
 use kinogaki_studio_api::edit::editor::{Placed, gather};
 use kinogaki_studio_api::format::files::Named;
 use kinogaki_studio_api::geometry::image::ImageSource;
-use kinogaki_studio_api::geometry::{Attribute, Attributes, Column, Domain, Text, Xform, names};
+use kinogaki_studio_api::geometry::{
+    Attribute, Attributes, Column, Domain, Meaning, Text, Vec3, Xform, names,
+};
 use kinogaki_studio_api::standard::{self, Instances, MAX_DEPTH, Materials};
 use kinogaki_studio_api::value::ImageRef;
 use kinogaki_studio_api::{
@@ -171,6 +178,15 @@ fn said(lines: Vec<String>) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// A material an instance binds (an index into the scene's), and whether
+/// it binds the prototype's prims whatever they bind.
+type Bound = Option<(usize, bool)>;
+
+/// What `node` binds, as an instance binds it.
+fn bound(node: &Node) -> Bound {
+    node.material.map(|m| (m, node.stronger))
+}
+
 /// A node placed: its item, and where it is in the project.
 #[derive(Clone, Copy)]
 struct At {
@@ -210,7 +226,7 @@ impl Walk<'_, '_> {
         };
         let data = self.data(node, &self.scene.path(at.len()), 0)?;
         let instance = match node.instance {
-            Some(p) => self.instance(p, node.material, 0)?,
+            Some(p) => self.instance(p, bound(node), 0)?,
             None => None,
         };
         let (data, instance) = match (data, instance) {
@@ -277,7 +293,7 @@ impl Walk<'_, '_> {
                 }
             }
             NodeKind::Instancer(instancer) => {
-                match self.instancer(instancer, node.material, depth)? {
+                match self.instancer(instancer, bound(node), depth)? {
                     Some(instances) => instances,
                     None => return Ok(None),
                 }
@@ -292,53 +308,138 @@ impl Walk<'_, '_> {
         Ok(None)
     }
 
-    /// An instance of prototype `p` where its prim is, naming `material`
-    /// where the prototype binds none.
-    fn instance(
-        &mut self,
-        p: usize,
-        material: Option<usize>,
-        depth: usize,
-    ) -> Result<Option<Data>, Error> {
+    /// An instance of prototype `p` where its prim is, binding `material`.
+    fn instance(&mut self, p: usize, material: Bound, depth: usize) -> Result<Option<Data>, Error> {
         let Some(prototype) = self.prototype(p, depth + 1)? else {
             return Ok(None);
         };
-        let attributes = self.bound(&[p], material, 1)?;
+        let attributes = self.bound(&[(p, material)])?;
         let one = vec![Xform::IDENTITY].into();
         self.instances(vec![prototype], one, None, attributes)
     }
 
-    /// `instancer`'s instances that show, each placed relative to it.
+    /// `instancer`'s instances that show, each placed relative to it,
+    /// binding what its prototype's prim binds, else `material`.
     fn instancer(
         &mut self,
         instancer: &Instancer,
-        material: Option<usize>,
+        material: Bound,
         depth: usize,
     ) -> Result<Option<Data>, Error> {
         let mut prototypes = Vec::new();
-        let mut index_of = Vec::with_capacity(instancer.prototypes.len());
+        // The scene's prototype each value is made of.
+        let mut made_of: Vec<usize> = Vec::new();
+        // Each target's value and binding.
+        let mut targets: Vec<Option<(usize, usize, Bound)>> = Vec::new();
         for &p in &instancer.prototypes {
-            let made = self.prototype(p, depth + 1)?;
-            index_of.push(made.as_ref().map(|_| prototypes.len() as u32));
-            prototypes.extend(made);
+            let (shows, binds) = self.shown_by(p, material);
+            let index = match made_of.iter().position(|&q| q == shows) {
+                Some(k) => Some(k),
+                None => self.prototype(shows, depth + 1)?.map(|made| {
+                    prototypes.push(made);
+                    made_of.push(shows);
+                    prototypes.len() - 1
+                }),
+            };
+            targets.push(index.map(|k| (k, shows, binds)));
         }
         let shown = instancer.shown();
         let space = self.shaping.space;
-        let (mut xforms, mut which) = (Vec::new(), Vec::new());
+        let (mut xforms, mut which, mut kept, mut bindings) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (i, m) in instancer.transforms().iter().enumerate() {
             let named = usize::try_from(instancer.proto_indices[i]).ok();
-            let index = named.and_then(|k| index_of.get(k).copied().flatten());
-            if let (true, Some(index)) = (shown[i], index) {
+            let target = named.and_then(|k| targets.get(k).copied().flatten());
+            if let (true, Some((index, shows, binds))) = (shown[i], target) {
                 xforms.push(space.placement(&space::xform(m)));
-                which.push(index);
+                which.push(index as u32);
+                kept.push(i);
+                bindings.push((shows, binds));
             }
         }
         if prototypes.is_empty() {
             return Ok(None);
         }
-        let attributes = self.bound(&instancer.prototypes, material, xforms.len())?;
+        let attributes = self.bound(&bindings)?;
+        let attributes = self.per_instance(attributes, instancer, &kept)?;
         let which = (prototypes.len() > 1).then(|| which.into());
         self.instances(prototypes, xforms.into(), which, attributes)
+    }
+
+    /// What the point instancer's prototype `p` shows, and what its
+    /// instances bind: the prototype of the instance it is when it is one
+    /// alone (placed where the instancer puts it, shown), binding its own
+    /// material, else `material`; else itself, binding `material`.
+    fn shown_by(&self, p: usize, material: Bound) -> (usize, Bound) {
+        let nodes = self.scene.prototypes.get(p).map_or(&[][..], |p| &p.nodes);
+        match nodes {
+            [node]
+                if matches!(node.kind, NodeKind::Group)
+                    && node.transform == Matrix4d::IDENTITY
+                    && !node.resets_transform
+                    && node.visible =>
+            {
+                match node.instance {
+                    Some(q) => (q, bound(node).or(material)),
+                    None => (p, material),
+                }
+            }
+            _ => (p, material),
+        }
+    }
+
+    /// `attributes` with the point instancer's `ids` as the instances'
+    /// `id`, its `velocities` their `v` and its `displayColor` their `Cd`,
+    /// of the instances `kept`.
+    fn per_instance(
+        &mut self,
+        attributes: Attributes,
+        instancer: &Instancer,
+        kept: &[usize],
+    ) -> Result<Attributes, Error> {
+        let mut attributes = attributes;
+        if let Some(ids) = &instancer.ids {
+            let ids: Vec<i64> = kept.iter().map(|&i| ids[i]).collect();
+            attributes = attributes.with(
+                Domain::Instance,
+                names::ID,
+                Attribute::tuples(ids, Meaning::None)?,
+            )?;
+        }
+        let space = self.shaping.space;
+        for primvar in &instancer.primvars {
+            let Some(values) = primvar.values.as_array().and_then(|a| match a {
+                crate::usd::sdf::Array::Vec3f(v) if v.len() == instancer.len() => Some(v),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let mut picked: Vec<[f32; 3]> = kept.iter().map(|&i| values[i]).collect();
+            let (name, meaning) = match primvar.name.as_str() {
+                "velocities" => {
+                    let scale = space.scale();
+                    for v in &mut picked {
+                        let d = space.direction(Vec3::new(v[0].into(), v[1].into(), v[2].into()))
+                            * scale;
+                        *v = [d.x, d.y, d.z].map(|c| c as f32);
+                    }
+                    (names::V, Meaning::Vector)
+                }
+                "displayColor" => {
+                    let colors = self.shaping.colors;
+                    let from = primvar.color_space.as_deref().unwrap_or(LIN_REC709);
+                    if let Err(e) = colors.convert_f32(from, colors.working(), &mut picked) {
+                        self.warnings
+                            .push(format!("instances' displayColor: {e}; kept as it is"));
+                    }
+                    (names::CD, Meaning::Color)
+                }
+                _ => continue,
+            };
+            attributes =
+                attributes.with(Domain::Instance, name, Attribute::tuples(picked, meaning)?)?;
+        }
+        Ok(attributes)
     }
 
     /// Instances whose nesting is too deep are left out, said.
@@ -359,39 +460,44 @@ impl Walk<'_, '_> {
         }
     }
 
-    /// The Instance domain's `material` of `count` instances binding
-    /// `material`, when none of `prototypes` binds its own.
-    fn bound(
-        &mut self,
-        prototypes: &[usize],
-        material: Option<usize>,
-        count: usize,
-    ) -> Result<Attributes, Error> {
-        let Some(material) = material else {
-            return Ok(Attributes::new());
-        };
-        let own = |node: &Node| {
-            node.material.is_some()
-                || matches!(&node.kind, NodeKind::Mesh(m) if m.subsets.iter().any(|s| s.material.is_some()))
-        };
-        let scene = self.scene;
-        let binds = prototypes.iter().any(|&p| {
-            scene
-                .prototypes
-                .get(p)
-                .is_some_and(|p| p.nodes.iter().any(own))
-        });
-        if binds {
+    /// The Instance domain's `material`: what each instance binds
+    /// (`bindings`: the prototype it shows, and its binding) where the
+    /// prototype's prims bind nothing of their own or the binding is
+    /// stronger than theirs; none when no instance binds one.
+    fn bound(&mut self, bindings: &[(usize, Bound)]) -> Result<Attributes, Error> {
+        let keys = self.shaping.keys;
+        let mut weaker = false;
+        let named: Vec<&str> = (bindings.iter())
+            .map(|&(p, bound)| match bound {
+                Some((m, stronger)) if stronger || !self.binds(p) => &*keys[m],
+                Some(_) => {
+                    weaker = true;
+                    ""
+                }
+                None => "",
+            })
+            .collect();
+        if weaker {
             self.warnings.push(
                 "an instance's material reaches only the prims its prototype leaves unbound; \
                  the prototype's own bindings kept"
                     .into(),
             );
+        }
+        if named.iter().all(|k| k.is_empty()) {
             return Ok(Attributes::new());
         }
-        let key = &*self.shaping.keys[material];
-        let text = Text::from_strs(std::iter::repeat_n(key, count));
-        Attributes::new().with(Domain::Instance, names::MATERIAL, Attribute::text(text))
+        let text = Attribute::text(Text::from_strs(named));
+        Attributes::new().with(Domain::Instance, names::MATERIAL, text)
+    }
+
+    /// Whether prototype `p`'s prims bind materials of their own.
+    fn binds(&self, p: usize) -> bool {
+        let own = |node: &Node| {
+            node.material.is_some()
+                || matches!(&node.kind, NodeKind::Mesh(m) if m.subsets.iter().any(|s| s.material.is_some()))
+        };
+        (self.scene.prototypes.get(p)).is_some_and(|p| p.nodes.iter().any(own))
     }
 
     /// Prototype `p` as one value, made once: its geometry gathered where
@@ -420,6 +526,8 @@ impl Walk<'_, '_> {
         }
         let space = self.shaping.space;
         let mut worlds: Vec<Xform> = Vec::with_capacity(prototype.nodes.len());
+        // An invisible prim hides its descendants: nothing of it shows.
+        let mut hidden: Vec<bool> = Vec::with_capacity(prototype.nodes.len());
         let mut geometry: Vec<(Data, Xform)> = Vec::new();
         let mut parts = Vec::new();
         for (k, node) in prototype.nodes.iter().enumerate() {
@@ -430,6 +538,10 @@ impl Walk<'_, '_> {
                 _ => local,
             };
             worlds.push(world);
+            hidden.push(!node.visible || node.parent.is_some_and(|p| hidden[p]));
+            if hidden[k] {
+                continue;
+            }
             let path = prototype.path(k);
             if matches!(node.kind, NodeKind::Light(_) | NodeKind::Camera(_)) {
                 self.warnings.push(format!(
@@ -449,7 +561,7 @@ impl Walk<'_, '_> {
             if let Some(q) = node.instance
                 && let Some(nested) = self.prototype(q, depth + 1)?
             {
-                let attributes = self.bound(&[q], node.material, 1)?;
+                let attributes = self.bound(&[(q, bound(node))])?;
                 let at = vec![world].into();
                 parts.extend(self.instances(vec![nested], at, None, attributes)?);
             }
