@@ -186,7 +186,15 @@ fn a_dictionary_shared_by_its_entries_decodes_once() {
     // 30 levels: 2^30 dictionaries decoded one reference at a time.
     let dag = crafted::dictionary_dag(30);
     assert!(dag.len() < 2048, "{} bytes", dag.len());
-    read_bytes("dag.usdc", &dag, small()).unwrap();
+    let read = read_bytes("dag.usdc", &dag, small()).unwrap();
+    // As text, the layer's metadata, it would hold all of them: left out.
+    let said = "customLayerData: more than the read's budget holds; left out";
+    assert!(
+        read.warnings.iter().any(|w| w.message == said),
+        "{:?}",
+        read.warnings
+    );
+    assert!(read.metadata.is_empty());
 }
 
 #[test]

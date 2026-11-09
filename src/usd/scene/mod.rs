@@ -45,7 +45,7 @@ pub use shapes::{Shape, ShapeForm};
 pub use values::Time;
 pub use write::{author, write_file};
 
-use crate::usd::sdf::{Path, Token};
+use crate::usd::sdf::{Path, Token, Value};
 use crate::usd::shade::Material;
 
 /// Which axis points up (`upAxis`).
@@ -75,7 +75,25 @@ pub struct Scene {
     pub assets: Vec<Asset>,
     /// What reading left out, one line each.
     pub warnings: Vec<String>,
+    /// The top prim the layer's `defaultPrim` names, by its name; `None`:
+    /// the first top prim, as a write takes it.
+    pub default_prim: Option<Token>,
+    /// The root layer's metadata of the fields [`METADATA`] lists, as
+    /// authored: read, and written as they are.
+    pub metadata: Vec<(Token, Value)>,
 }
+
+/// The layer metadata a scene keeps besides its units and default prim:
+/// what a stage says of itself that no prim holds.
+pub const METADATA: [&str; 7] = [
+    "documentation",
+    "customLayerData",
+    "startTimeCode",
+    "endTimeCode",
+    "framesPerSecond",
+    "timeCodesPerSecond",
+    "renderSettingsPrimPath",
+];
 
 impl Default for Scene {
     /// An empty scene in USD's fallback units (centimetres, Y up).
@@ -88,11 +106,21 @@ impl Default for Scene {
             materials: Vec::new(),
             assets: Vec::new(),
             warnings: Vec::new(),
+            default_prim: None,
+            metadata: Vec::new(),
         }
     }
 }
 
 impl Scene {
+    /// The top node `defaultPrim` names: the one [`Scene::default_prim`]
+    /// names, else the first.
+    pub fn default_node(&self) -> Option<usize> {
+        let tops = || (0..self.nodes.len()).filter(|&n| self.nodes[n].parent.is_none());
+        let named = |n: &usize| self.default_prim.as_ref() == Some(&self.nodes[*n].name);
+        tops().find(named).or_else(|| tops().next())
+    }
+
     /// The path of node `index` on the stage.
     pub fn path(&self, index: usize) -> Path {
         path_in(&self.nodes, Path::absolute_root(), index)

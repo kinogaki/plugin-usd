@@ -22,8 +22,8 @@ use super::light::LightKind;
 use super::values::{Time, token_at, value_at};
 use super::xform::local_transform;
 use super::{
-    Asset, AssetSource, Node, NodeKind, Prototype, Scene, UpAxis, camera, curves, instancer, light,
-    mesh, shapes,
+    Asset, AssetSource, METADATA, Node, NodeKind, Prototype, Scene, UpAxis, camera, curves,
+    instancer, light, mesh, shapes,
 };
 use crate::usd::compose::assets;
 use crate::usd::error::Result;
@@ -104,6 +104,11 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
         ..
     } = walker;
     let paths = assets.paths;
+    let root = stage.root_layer().root();
+    let default_prim = root.get("defaultPrim").and_then(Value::as_token).cloned();
+    let metadata = (METADATA.into_iter())
+        .filter_map(|name| Some((Token::new(name), root.get(name)?.clone())))
+        .collect();
     let mut scene = Scene {
         up_axis,
         meters_per_unit,
@@ -112,6 +117,8 @@ pub fn read(stage: &mut Stage, options: &ReadOptions) -> Result<Scene> {
         materials,
         assets: Vec::with_capacity(paths.len()),
         warnings: stage.warnings().into_iter().chain(warnings).collect(),
+        default_prim,
+        metadata,
     };
     for (path, authored) in paths {
         let source = asset_source(stage, &path);

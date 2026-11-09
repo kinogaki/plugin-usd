@@ -3,7 +3,8 @@
 //! models hold models, and a model's parent is a group model, so the
 //! hierarchy is contiguous from the default prim):
 //!
-//! - the default prim is an `assembly`;
+//! - a top prim is an `assembly` (the default prim, and the others of a
+//!   layer of several root prims), a top Scope no model;
 //! - a group (an Xform: a Part, an object holding its value beside its
 //!   children) is a `group`;
 //! - a prim showing geometry or instances is a `component`;
@@ -22,6 +23,7 @@ pub(super) fn assign(scene: &mut Scene) {
     let mut groups: Vec<bool> = Vec::with_capacity(scene.nodes.len());
     for node in &mut scene.nodes {
         let model = match node.parent {
+            None if node.type_name.as_str() == "Scope" => "",
             None => "assembly",
             Some(p) if groups[p] => kind(node),
             Some(_) => "",

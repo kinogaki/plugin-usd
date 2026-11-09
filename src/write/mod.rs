@@ -2,9 +2,12 @@
 //! files its materials and domes name under `textures/` (a usda or usdc
 //! names them as every written document does: [`assets`]).
 //!
-//! The stage is in the project's units (`metersPerUnit`, `upAxis`), its
-//! default prim the one group the items are under (else one named after the
-//! file holding them). Each materials item (a Material Library) is a Scope
+//! The stage is in the project's units (`metersPerUnit`, `upAxis`). Of a
+//! document read from a layer (`Writing::metadata`) whose `defaultPrim`
+//! names a top item, the top items are the root prims as they were, that
+//! one the default prim, and the layer's metadata comes back
+//! ([`crate::metadata`]); else the default prim is the one group the items
+//! are under, or one named after the file holding them. Each materials item (a Material Library) is a Scope
 //! at its place, named as the library, its Materials beneath by their
 //! names; a group holding only libraries, unplaced, is a Scope too. Each
 //! other item is its prim, placed relative to its parent's: polygons and curves
@@ -81,24 +84,15 @@ impl FormatWriter for Writer {
             writing,
             warnings: Vec::new(),
         };
-        // The default prim: the one group at the top, else one named after
-        // the file.
-        let shown =
-            (0..items.len()).filter(|&i| items[i].parent.is_none() && !is_materials(&items[i]));
-        let root_item = match shown.collect::<Vec<_>>()[..] {
-            [one] if items[one].data.is_none() => Some(one),
-            _ => None,
+        let top = Top::of(items, path, writing.metadata);
+        let root_item = match &top {
+            Top::One { item, .. } => *item,
+            Top::Prims(_) => None,
         };
-        let root_name = match root_item {
-            Some(item) => names::identifier(&items[item].name).into_owned(),
-            None => {
-                let stem = path
-                    .file_stem()
-                    .map_or("Scene".into(), |s| s.to_string_lossy());
-                names::identifier(&stem).into_owned()
-            }
+        let root = match &top {
+            Top::One { name, .. } => Path::absolute_root().child(Token::new(name)),
+            Top::Prims(_) => Path::absolute_root(),
         };
-        let root = Path::absolute_root().child(Token::new(&root_name));
         // Each item's prim name, unique beside its siblings (the root's
         // children for the top ones), libraries among them; the prims an
         // item's value makes beneath it take names after its children's.
@@ -119,11 +113,21 @@ impl FormatWriter for Writer {
         for (item, path) in items.iter().zip(&paths) {
             out.materials_item(item, path)?;
         }
-        out.scene.nodes.push(Node {
-            visible: root_item.is_none_or(|i| items[i].visible),
-            transform: root_item.map_or(Matrix4d::IDENTITY, |i| matrix(&items[i].placement)),
-            ..Node::group(&root_name, None)
-        });
+        // The root prim holding the others, when one does.
+        let held = match &top {
+            Top::One { item, name } => {
+                out.scene.nodes.push(Node {
+                    visible: item.is_none_or(|i| items[i].visible),
+                    transform: item.map_or(Matrix4d::IDENTITY, |i| matrix(&items[i].placement)),
+                    ..Node::group(name, None)
+                });
+                Some(0)
+            }
+            Top::Prims(default) => {
+                out.scene.default_prim = Some(default.clone());
+                None
+            }
+        };
         // Each item's node, under its parent's (the root's for the top ones).
         let mut parents = vec![false; items.len()];
         for parent in items.iter().filter_map(|i| i.parent) {
@@ -151,13 +155,13 @@ impl FormatWriter for Writer {
                 }
                 false => item,
             };
-            let parent = item.parent.and_then(|p| node_of[p]).unwrap_or(0);
+            let parent = item.parent.and_then(|p| node_of[p]).or(held);
             let name = paths[i].name();
             node_of[i] = Some(match scopes[i] {
                 true => {
                     let scope = Node {
                         type_name: Token::new("Scope"),
-                        ..Node::group(name, Some(parent))
+                        ..Node::group(name, parent)
                     };
                     out.scene.nodes.push(scope);
                     out.scene.nodes.len() - 1
@@ -171,6 +175,9 @@ impl FormatWriter for Writer {
             });
         }
         named.list_portals(&mut out.scene, &node_of, &paths);
+        if let Some(metadata) = writing.metadata {
+            out.layer_metadata(metadata);
+        }
         kinds::assign(&mut out.scene);
         let (assets, unpacked) = std::mem::replace(&mut out.assets, Assets::of(path)).assets();
         out.scene.assets = assets;
@@ -179,6 +186,47 @@ impl FormatWriter for Writer {
         crate::usd::scene::write_file(&out.scene, path)
             .map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
         Ok(out.warnings.into_iter().map(Diagnostic::warning).collect())
+    }
+}
+
+/// Where the items' top prims go.
+enum Top {
+    /// Each top item is a root prim, the default prim the one of this name:
+    /// a document read from a layer whose `defaultPrim` named it.
+    Prims(Token),
+    /// One root prim of this name holds every other prim: the one group at
+    /// the top (`item`), else a prim made for them, named after the file.
+    One { item: Option<usize>, name: String },
+}
+
+impl Top {
+    /// Where `items`, written to `path`, go; `metadata` the layer's they
+    /// were read from.
+    fn of(items: &[FileItem], path: &FilePath, metadata: Option<&FormatOptions>) -> Top {
+        let tops = || (0..items.len()).filter(|&i| items[i].parent.is_none());
+        let default =
+            (metadata.and_then(|m| m.get(crate::metadata::DEFAULT_PRIM))).and_then(|v| v.text());
+        if let Some(default) = default
+            && tops().any(|i| names::identifier(&items[i].name) == default)
+        {
+            return Top::Prims(Token::new(default));
+        }
+        let shown = tops().filter(|&i| !is_materials(&items[i]));
+        match shown.collect::<Vec<_>>()[..] {
+            [one] if items[one].data.is_none() => Top::One {
+                item: Some(one),
+                name: names::identifier(&items[one].name).into_owned(),
+            },
+            _ => {
+                let stem = path
+                    .file_stem()
+                    .map_or("Scene".into(), |s| s.to_string_lossy());
+                Top::One {
+                    item: None,
+                    name: names::identifier(&stem).into_owned(),
+                }
+            }
+        }
     }
 }
 
@@ -265,6 +313,28 @@ struct Out<'w> {
 type Of = (usize, Vec<(String, String)>);
 
 impl Out<'_> {
+    /// The layer metadata `metadata` (the document's file's) holds that
+    /// still applies: its fields as read, the render settings prim's path
+    /// while it names a prim written; what doesn't, said.
+    fn layer_metadata(&mut self, metadata: &FormatOptions) {
+        self.scene.metadata = crate::metadata::fields(metadata, &mut self.warnings);
+        let named = metadata.get(crate::metadata::RENDER_SETTINGS);
+        let Some(path) = named.and_then(|v| v.text()) else {
+            return;
+        };
+        let written = (0..self.scene.nodes.len()).any(|n| self.scene.path(n).to_string() == path);
+        match written {
+            true => self.scene.metadata.push((
+                Token::new(crate::metadata::RENDER_SETTINGS),
+                crate::usd::sdf::Value::String(Token::new(path)),
+            )),
+            false => self.warnings.push(format!(
+                "{}: names {path}, which isn't written; left out",
+                crate::metadata::RENDER_SETTINGS
+            )),
+        }
+    }
+
     /// The materials `item` holds (a library), each beneath `library`, the
     /// library's prim, by its name.
     fn materials_item(&mut self, item: &FileItem, library: &Path) -> Result<(), Error> {
@@ -297,13 +367,13 @@ impl Out<'_> {
     fn item(
         &mut self,
         item: &FileItem,
-        (name, parent): (&str, usize),
+        (name, parent): (&str, Option<usize>),
         (parent_of, names): (bool, &mut Unique),
     ) -> Result<usize, Error> {
         let mut node = Node {
             transform: matrix(&item.placement),
             visible: item.visible,
-            ..Node::group(name, Some(parent))
+            ..Node::group(name, parent)
         };
         let at = self.scene.nodes.len();
         let mut children: Vec<Node> = Vec::new();
@@ -345,7 +415,7 @@ impl Out<'_> {
                 let placement = item.placement.compose(&shows.xform);
                 node = Node {
                     transform: matrix(&placement),
-                    ..shows.node(name, Some(parent))
+                    ..shows.node(name, parent)
                 };
                 node.visible = item.visible;
             }

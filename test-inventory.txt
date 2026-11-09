@@ -4,9 +4,11 @@ kinogaki-usd/format hand materials::hand_run_usdchecker_arkit_passes_materialx_a
 kinogaki-usd/format hand measure::hand_run_the_grid_reads_and_writes_within_its_budgets
 kinogaki-usd/format hand measure::hand_run_the_kitchen_set_imports_within_its_budget
 kinogaki-usd/format test document::a_document_read_keeps_the_stages_units
+kinogaki-usd/format test export::a_documents_default_prim_keeps_its_root_prims
 kinogaki-usd/format test export::a_domes_file_held_file_and_node_go_to_a_layer
 kinogaki-usd/format test export::colors_are_written_in_linear_rec709_as_other_applications_read_them
 kinogaki-usd/format test export::curves_come_back_of_their_basis
+kinogaki-usd/format test export::layer_metadata_comes_back
 kinogaki-usd/format test export::lights_cameras_and_a_domes_image_come_back
 kinogaki-usd/format test export::polygons_come_back_where_they_were_in_any_units
 kinogaki-usd/format test geometry::a_meshs_subsets_come_back_once_with_its_names_and_parts

@@ -311,3 +311,163 @@ fn colors_are_written_in_linear_rec709_as_other_applications_read_them() {
         .tuples::<[f32; 3]>(Domain::Point, names::CD);
     assert_eq!(cd.unwrap()[0], [0.5, 0.25, 0.75]);
 }
+
+/// A centimetre layer of two root prims, World its default prim, and the
+/// metadata no prim holds; its render settings prim is of a type Studio
+/// doesn't hold.
+const DOCUMENT: &str = r#"#usda 1.0
+(
+    customLayerData = {
+        string author = "Studio"
+        int revision = 3
+    }
+    defaultPrim = "World"
+    doc = "Two root prims"
+    endTimeCode = 48
+    framesPerSecond = 24
+    metersPerUnit = 0.01
+    renderSettingsPrimPath = "/Render/Settings"
+    startTimeCode = 1
+    timeCodesPerSecond = 24
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Mesh "Floor"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)]
+    }
+}
+
+def Scope "Looks"
+{
+    def Material "Clay"
+    {
+    }
+}
+
+def Scope "Render"
+{
+    def RenderSettings "Settings"
+    {
+    }
+}
+"#;
+
+/// `DOCUMENT` read as File ▸ Open reads it, in `scratch`.
+fn opened(scratch: &Scratch) -> kinogaki_studio_api::Imported {
+    use kinogaki_studio_api::{FileFormat, Input, Purpose, Reading};
+    let path = scratch.join("document.usda");
+    std::fs::write(&path, DOCUMENT).unwrap();
+    let reading = Reading::new(
+        Purpose::Document,
+        metres(),
+        &kinogaki_studio_api_testing::Unconverted,
+    );
+    kinogaki_usd::Usd
+        .read(&Input::file(&path), &Default::default(), &reading)
+        .unwrap()
+}
+
+/// `read`'s items written to `path` in its units, with its metadata when
+/// `kept`: what the writer said.
+fn written(
+    read: &kinogaki_studio_api::Imported,
+    path: &std::path::Path,
+    kept: bool,
+) -> Vec<String> {
+    use kinogaki_studio_api::{FileFormat, Writing};
+    let writing = Writing {
+        metadata: kept.then_some(&read.metadata),
+        ..Writing::new(
+            read.units.unwrap(),
+            &kinogaki_studio_api_testing::Unconverted,
+        )
+    };
+    let writer = kinogaki_usd::Usd.writer().unwrap();
+    let said = writer
+        .write(path, &read.items, &writing, &Default::default())
+        .unwrap();
+    said.into_iter().map(|d| d.message).collect()
+}
+
+/// The root prims of the layer at `path`, and its default prim.
+fn roots(path: &std::path::Path) -> (Vec<String>, Option<String>) {
+    use kinogaki_usd::usd::sdf::{Path, Value};
+    let mut stage = crate::support::stage(path);
+    let names = stage.child_names(&Path::absolute_root()).unwrap();
+    let default = stage
+        .root_layer()
+        .root()
+        .get("defaultPrim")
+        .and_then(Value::as_token);
+    (
+        names.iter().map(|n| n.as_str().to_owned()).collect(),
+        default.map(|d| d.as_str().to_owned()),
+    )
+}
+
+#[test]
+fn a_documents_default_prim_keeps_its_root_prims() {
+    let scratch = Scratch::new("usd-document-roots");
+    let read = opened(&scratch);
+    assert_eq!(
+        read.metadata.get("defaultPrim"),
+        Some(&kinogaki_studio_api::Value::Text("World".into()))
+    );
+    // Written back with the file's metadata: its root prims as they were.
+    let back = scratch.join("back.usda");
+    written(&read, &back, true);
+    let kept = (
+        vec!["World".to_owned(), "Looks".to_owned()],
+        Some("World".to_owned()),
+    );
+    assert_eq!(roots(&back), kept);
+    // Exported without it, as a Studio scene: one root prim holds the rest.
+    let exported = scratch.join("exported.usda");
+    written(&read, &exported, false);
+    assert_eq!(
+        roots(&exported),
+        (vec!["World".to_owned()], Some("World".to_owned()))
+    );
+}
+
+#[test]
+fn layer_metadata_comes_back() {
+    let scratch = Scratch::new("usd-document-metadata");
+    let read = opened(&scratch);
+    let back = scratch.join("back.usda");
+    let said = written(&read, &back, true);
+    // The render settings prim isn't written: the path naming it is left
+    // out, said.
+    let left = "renderSettingsPrimPath: names /Render/Settings, which isn't written; left out";
+    assert!(said.iter().any(|l| l == left), "{said:?}");
+    let mut expected = read.metadata.clone();
+    expected.remove("renderSettingsPrimPath");
+    for name in [
+        "documentation",
+        "customLayerData",
+        "startTimeCode",
+        "endTimeCode",
+    ] {
+        assert!(
+            expected.contains_key(name),
+            "{name} read: {:?}",
+            read.metadata
+        );
+    }
+    use kinogaki_studio_api::{FileFormat, Input, Purpose, Reading};
+    let reading = Reading::new(
+        Purpose::Document,
+        metres(),
+        &kinogaki_studio_api_testing::Unconverted,
+    );
+    let again = kinogaki_usd::Usd
+        .read(&Input::file(&back), &Default::default(), &reading)
+        .unwrap();
+    assert_eq!(again.metadata, expected);
+    assert_eq!(again.units, read.units, "the stage's centimetres, Z up");
+}

@@ -18,6 +18,7 @@
 pub mod usd;
 
 mod lights;
+mod metadata;
 mod names;
 mod read;
 mod shading;

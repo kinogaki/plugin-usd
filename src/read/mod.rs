@@ -133,12 +133,14 @@ pub(crate) fn read(
     }
     let Walk { mut items, .. } = walk;
     named::resolve(&scene, &at, &mut items, &mut warnings);
+    let metadata = crate::metadata::read(&scene, &reading.budget, &mut warnings);
     let mut warnings = said(warnings);
     warnings.extend(named.warnings());
     Ok(Imported {
         items,
         warnings,
         units: kept,
+        metadata,
     })
 }
 

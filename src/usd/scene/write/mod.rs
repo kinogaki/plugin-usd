@@ -1,8 +1,9 @@
 //! A scene authored as one layer, and written as a usda, usdc or usdz file
 //! with the files it names.
 //!
-//! The layer holds the stage metadata (`defaultPrim` the first top prim,
-//! `upAxis`, `metersPerUnit`), each node as its prim at the path its names
+//! The layer holds the stage metadata (`defaultPrim` the top prim the scene
+//! names, else the first, `upAxis`, `metersPerUnit`, and the metadata the
+//! scene keeps as it is), each node as its prim at the path its names
 //! give, of its model kind, placed by its local transform
 //! (`!resetXformStack!` kept), hidden with `visibility = invisible`, bound
 //! with `material:binding`
@@ -68,8 +69,11 @@ fn written(scene: &Scene, names: &HashMap<Token, Token>, path: &Token) -> Token 
 /// The scene as a layer, each asset path written as `asset` gives it.
 fn author_with(scene: &Scene, asset: &dyn Fn(&Token) -> Token) -> Result<LayerData> {
     let mut author = Author::new();
-    if let Some(top) = scene.nodes.iter().find(|node| node.parent.is_none()) {
-        author.layer_metadata("defaultPrim", Value::Token(top.name.clone()));
+    if let Some(top) = scene.default_node() {
+        author.layer_metadata("defaultPrim", Value::Token(scene.nodes[top].name.clone()));
+    }
+    for (name, value) in &scene.metadata {
+        author.layer_metadata(name, value.clone());
     }
     author.layer_metadata("metersPerUnit", Value::Double(scene.meters_per_unit));
     let up = match scene.up_axis {
@@ -183,7 +187,7 @@ impl Stored {
     /// An instance or point instancer naming a prototype that does not
     /// exist.
     fn of(scene: &Scene) -> Result<Stored> {
-        let top = scene.nodes.iter().position(|node| node.parent.is_none());
+        let top = scene.default_node();
         let default = top.map_or_else(Path::absolute_root, |t| {
             Path::absolute_root().child(scene.nodes[t].name.clone())
         });
