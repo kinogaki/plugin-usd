@@ -38,6 +38,7 @@ use files::{Files, Held};
 use geometry::Shaping;
 use kinogaki_render_api::standard::LightShape;
 use kinogaki_studio_api::edit::editor::{Placed, gather};
+use kinogaki_studio_api::format::Conversion;
 use kinogaki_studio_api::format::files::Named;
 use kinogaki_studio_api::geometry::image::{ImageColor, ImageSource};
 use kinogaki_studio_api::geometry::{
@@ -77,8 +78,10 @@ pub(crate) fn read(
         .map_err(|e| failed(input, e))?;
     drop(stage);
     reading.check()?;
-    let space = space::conversion(scene.meters_per_unit, scene.up_axis, reading.units)
+    let stage_units = space::units(scene.meters_per_unit, scene.up_axis)
         .map_err(|e| Error::invalid(format!("{input}: {}", e.message())))?;
+    let kept = reading.document_units(stage_units);
+    let space = Conversion::new(stage_units, kept.unwrap_or(reading.units));
     let keys: Vec<Arc<str>> = (scene.materials.iter())
         .map(|m| Arc::from(m.path.to_string()))
         .collect();
@@ -99,6 +102,7 @@ pub(crate) fn read(
         return Ok(Imported {
             items: vec![item],
             warnings,
+            ..Imported::default()
         });
     }
     let mut libraries = HashMap::new();
@@ -131,7 +135,11 @@ pub(crate) fn read(
     named::resolve(&scene, &at, &mut items, &mut warnings);
     let mut warnings = said(warnings);
     warnings.extend(named.warnings());
-    Ok(Imported { items, warnings })
+    Ok(Imported {
+        items,
+        warnings,
+        units: kept,
+    })
 }
 
 /// Each material's sidedness: a mesh's `doubleSided` is its material's

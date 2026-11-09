@@ -86,7 +86,12 @@ impl FileFormat for Usd {
     fn options(&self) -> FormatOptions {
         FormatOptions::from([(options::EMBED.to_owned(), Value::Bool(false))])
     }
-    fn schema(&self, chosen: &FormatOptions, _: Purpose) -> Schema {
+    /// Embed Textures, for Import and a File node: File ▸ Open reads a
+    /// file as it is, its textures where they are.
+    fn schema(&self, chosen: &FormatOptions, purpose: Purpose) -> Schema {
+        if purpose == Purpose::Document {
+            return Schema::default();
+        }
         let on = options::option(chosen, options::EMBED, Value::bool).unwrap_or(false);
         options::embed(Schema::default(), on)
     }

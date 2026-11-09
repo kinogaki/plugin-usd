@@ -1,10 +1,12 @@
 //! The format through the SDK's contract: files read into the standard
 //! values (`import`), materials in every render context written and read
 //! back (`materials`), Material Libraries as Scopes where they are
-//! (`libraries`), geometry with all it holds (`geometry`), items written and read back (`export`), instances
+//! (`libraries`), geometry with all it holds (`geometry`), File ▸ Open's
+//! read in the stage's units (`document`), items written and read back (`export`), instances
 //! as USD's instancing (`instances`), the budgets (`measure`), and the
 //! hostile files once found (`hostile`, made by `crafted`).
 mod crafted;
+mod document;
 mod export;
 mod geometry;
 mod hostile;
