@@ -19,6 +19,7 @@ mod geometry;
 mod instances;
 mod kinds;
 mod materials;
+mod named;
 mod preview;
 
 use crate::lights;
@@ -129,6 +130,7 @@ impl FormatWriter for Writer {
             parents[parent] = true;
         }
         let scopes = scopes(items);
+        let named = named::Named::of(items, writing.colors, &mut out.warnings)?;
         let mut node_of: Vec<Option<usize>> = vec![None; items.len()];
         for (i, item) in items.iter().enumerate() {
             writing.check()?;
@@ -136,6 +138,19 @@ impl FormatWriter for Writer {
                 node_of[i] = Some(0);
                 continue;
             }
+            // A geometry light makes no prim; one holding others, a group.
+            let group;
+            let item = match named.unwritten(i) {
+                true if !parents[i] => continue,
+                true => {
+                    group = FileItem {
+                        data: None,
+                        ..item.clone()
+                    };
+                    &group
+                }
+                false => item,
+            };
             let parent = item.parent.and_then(|p| node_of[p]).unwrap_or(0);
             let name = paths[i].name();
             node_of[i] = Some(match scopes[i] {
@@ -149,10 +164,13 @@ impl FormatWriter for Writer {
                 }
                 false => {
                     let names = children.entry(Some(i)).or_default();
-                    out.item(item, (name, parent), (parents[i], names))?
+                    let at = out.item(item, (name, parent), (parents[i], names))?;
+                    named.emit(i, item, &mut out.scene, at, &mut out.warnings);
+                    at
                 }
             });
         }
+        named.list_portals(&mut out.scene, &node_of, &paths);
         kinds::assign(&mut out.scene);
         let (assets, unpacked) = std::mem::replace(&mut out.assets, Assets::of(path)).assets();
         out.scene.assets = assets;

@@ -237,6 +237,7 @@ fn mesh(
         subdivision: crate::subdivision::write(value, polygons),
         subsets,
         double_sided,
+        light: None,
     };
     (mesh, material)
 }

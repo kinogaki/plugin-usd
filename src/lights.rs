@@ -4,8 +4,11 @@
 //! tenths of a stage unit (millimetres in a centimetre stage), the
 //! standard's millimetres; a light's colors are linear Rec.709 unless the
 //! file says otherwise, the standard's the working space. Every intrinsic
-//! UsdLux kind is a standard one; ShapingAPI on a distant light or a dome
-//! (whose light leaves no surface) is left out, said ([`left_out`]).
+//! UsdLux kind is a standard one, a PortalLight and a mesh light (a
+//! GeometryLight, MeshLightAPI) too, the prims they name set by the reader
+//! once every item is made; ShapingAPI where Studio's light takes none (a
+//! distant light, a dome, a portal, a mesh light) and ShadowAPI on a portal
+//! or a mesh light are left out, said ([`left_out`]).
 use crate::names::file_name;
 use crate::usd::scene::{
     Camera as UsdCamera, Light as UsdLight, LightKind, Projection, Shadow as UsdShadow,
@@ -13,7 +16,7 @@ use crate::usd::scene::{
 };
 use crate::usd::sdf::Token;
 use kinogaki_render_api::standard::{
-    DomeFormat, Emission, Light, LightShape, Pole, Shadow, Shaping,
+    DomeFormat, Emission, Light, LightShape, MaterialSync, Pole, Shadow, Shaping,
 };
 use kinogaki_render_api::{Camera, Projection as Lens};
 use kinogaki_studio_api::Error;
@@ -51,13 +54,25 @@ impl<T> Default for Files<T> {
 
 /// `light` as the standard light: its sizes and shadow distances times
 /// `scale` (the project's units per stage unit), its colors in the working
-/// space, its files `files`.
+/// space, its files `files`; a portal's dome and a mesh light's mesh
+/// naming nothing (the reader names them).
 pub(crate) fn light(
     light: &UsdLight,
     scale: f64,
     files: Files<ImageRef>,
     colors: &dyn ColorService,
 ) -> Result<Light, Error> {
+    if light.kind == LightKind::Portal {
+        let shape = LightShape::Portal {
+            width: (light.width * scale) as f32,
+            height: (light.height * scale) as f32,
+            dome: None,
+        };
+        return Ok(Light {
+            shape,
+            ..Light::default()
+        });
+    }
     let shaping = (light.shaping.as_ref()).filter(|_| light.kind.shaped());
     let mut held = [
         light.color,
@@ -106,7 +121,13 @@ pub(crate) fn light(
         LightKind::Distant => LightShape::Distant {
             angle: light.angle.clamp(0.0, 180.0) as f32,
         },
+        LightKind::Geometry => LightShape::Geometry {
+            geometry: None,
+            sync: MaterialSync::of_key(&light.material_sync).unwrap_or_default(),
+        },
+        LightKind::Portal => unreachable!("a portal returned above"),
     };
+    let shadowed = light.kind.shadowed();
     let emission = match (&light.kinogaki_emission, light.enable_color_temperature) {
         (Some(key), _) => Emission::of_key(key).unwrap_or_default(),
         (None, true) => Emission::Temperature,
@@ -133,30 +154,39 @@ pub(crate) fn light(
             ies_angle_scale: s.ies_angle_scale as f32,
             ies_normalize: s.ies_normalize,
         }),
-        shadow: Shadow {
-            enable: light.shadow.enable,
-            color: shadow_color,
-            distance: reach(light.shadow.distance),
-            falloff: reach(light.shadow.falloff),
-            falloff_gamma: light.shadow.falloff_gamma.max(0.0) as f32,
+        shadow: match shadowed {
+            true => Shadow {
+                enable: light.shadow.enable,
+                color: shadow_color,
+                distance: reach(light.shadow.distance),
+                falloff: reach(light.shadow.falloff),
+                falloff_gamma: light.shadow.falloff_gamma.max(0.0) as f32,
+            },
+            false => Shadow::default(),
         },
-        camera: light.camera.unwrap_or(false),
+        camera: shadowed && light.camera.unwrap_or(false),
         ..Light::default()
     })
 }
 
 /// What of `light` the standard light can't hold, in words, which is left
-/// out: ShapingAPI on a distant light or a dome (their light leaves no
-/// surface a cone or a profile could shape); none when nothing is.
+/// out: ShapingAPI on a distant light, a dome or a portal (their light
+/// leaves no surface a cone or a profile could shape) or a mesh light;
+/// ShadowAPI off its fallbacks on a portal or a mesh light. None when
+/// nothing is.
 pub(crate) fn left_out(light: &UsdLight) -> Option<String> {
-    let shaping = light.shaping.as_ref().filter(|_| !light.kind.shaped())?;
-    let profile = (shaping.ies.as_ref()).map_or(String::new(), |file| {
-        format!(" (IES profile {})", file_name(file))
+    let kind = light.kind.type_name();
+    let shaping = light.shaping.as_ref().filter(|_| !light.kind.shaped());
+    let shaping = shaping.map(|shaping| {
+        let profile = (shaping.ies.as_ref()).map_or(String::new(), |file| {
+            format!(" (IES profile {})", file_name(file))
+        });
+        format!("ShapingAPI on a {kind}{profile} is left out")
     });
-    Some(format!(
-        "ShapingAPI on a {}{profile} is left out",
-        light.kind.type_name()
-    ))
+    let shadow = (!light.kind.shadowed() && light.shadow != UsdShadow::default())
+        .then(|| format!("ShadowAPI on a {kind} is left out"));
+    let lines: Vec<String> = shaping.into_iter().chain(shadow).collect();
+    (!lines.is_empty()).then(|| lines.join("; "))
 }
 
 /// The standard light `light` as UsdLux: sizes and shadow distances over
@@ -176,6 +206,8 @@ pub(crate) fn usd_light(
         LightShape::Cylinder { .. } => LightKind::Cylinder,
         LightShape::Dome { .. } => LightKind::Dome,
         LightShape::Distant { .. } => LightKind::Distant,
+        LightShape::Portal { .. } => LightKind::Portal,
+        LightShape::Geometry { .. } => LightKind::Geometry,
     };
     let mut out = UsdLight::new(kind);
     let mut held = [
@@ -218,6 +250,10 @@ pub(crate) fn usd_light(
             }
         }
         LightShape::Distant { angle } => out.angle = f64::from(*angle),
+        LightShape::Portal { width, height, .. } => {
+            (out.width, out.height) = (length(*width), length(*height));
+        }
+        LightShape::Geometry { sync, .. } => out.material_sync = Token::new(sync.key()),
     }
     colors.working_to(LIN_REC709, &mut held)?;
     let [color, tint, shadow_color, ground] = held;
@@ -251,7 +287,7 @@ pub(crate) fn usd_light(
         falloff: reach(light.shadow.falloff),
         falloff_gamma: f64::from(light.shadow.falloff_gamma),
     };
-    out.camera = Some(light.camera);
+    out.camera = kind.shadowed().then_some(light.camera);
     Ok(out)
 }
 

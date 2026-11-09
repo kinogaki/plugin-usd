@@ -1,5 +1,7 @@
 //! UsdLux lights as plain data: every intrinsic kind (RectLight, DiskLight,
-//! SphereLight, CylinderLight, DistantLight, DomeLight and DomeLight_1),
+//! SphereLight, CylinderLight, DistantLight, DomeLight and DomeLight_1, a
+//! dome's portals, PortalLight, the deprecated GeometryLight) and a Mesh
+//! that is a light (MeshLightAPI or LightAPI applied: [`mesh_light`]),
 //! LightAPI's inputs (intensity, exposure, color, color temperature,
 //! normalize, diffuse, specular), ShapingAPI's ([`Shaping`]), ShadowAPI's
 //! ([`Shadow`]), whether the camera sees the light ([`CAMERA`] and the
@@ -9,8 +11,9 @@
 //! dome's or rect's `texture:file`, an IES profile). An input left
 //! unauthored holds its schema's fallback (a DistantLight's intensity is
 //! 50,000). Inputs read under their `inputs:` names and, for files written
-//! before UsdLux took that prefix, under their bare names. Other UsdLux
-//! kinds are not read (see [`LightKind::unread`]).
+//! before UsdLux took that prefix, under their bare names. The prims a
+//! light names (a dome's portals, a GeometryLight's geometry) are kept as
+//! paths. Other UsdLux kinds are not read (see [`LightKind::unread`]).
 
 use super::author::Author;
 use super::values::{Time, color_space, reals, value_at};
@@ -48,17 +51,25 @@ pub enum LightKind {
     Distant,
     /// `DomeLight` and `DomeLight_1`: light from every direction.
     Dome,
+    /// `PortalLight`: an opening in its XY plane a dome lights through,
+    /// toward its -Z.
+    Portal,
+    /// A mesh that emits: the deprecated `GeometryLight` (naming its
+    /// geometry), or a Mesh applying MeshLightAPI or LightAPI.
+    Geometry,
 }
 
 impl LightKind {
     /// Every kind read.
-    pub const ALL: [LightKind; 6] = [
+    pub const ALL: [LightKind; 8] = [
         LightKind::Rect,
         LightKind::Disk,
         LightKind::Sphere,
         LightKind::Cylinder,
         LightKind::Distant,
         LightKind::Dome,
+        LightKind::Portal,
+        LightKind::Geometry,
     ];
 
     /// The prim type name a light of the kind is written as (a dome whose
@@ -71,6 +82,8 @@ impl LightKind {
             LightKind::Cylinder => "CylinderLight",
             LightKind::Distant => "DistantLight",
             LightKind::Dome => "DomeLight",
+            LightKind::Portal => "PortalLight",
+            LightKind::Geometry => "GeometryLight",
         }
     }
 
@@ -83,21 +96,32 @@ impl LightKind {
             "CylinderLight" => LightKind::Cylinder,
             "DistantLight" => LightKind::Distant,
             "DomeLight" | "DomeLight_1" => LightKind::Dome,
+            "PortalLight" => LightKind::Portal,
+            "GeometryLight" => LightKind::Geometry,
             _ => return None,
         })
     }
 
-    /// Whether ShapingAPI shapes a light of the kind (light leaving a
-    /// surface).
+    /// Whether Studio's light of the kind takes ShapingAPI: a rect, disk,
+    /// sphere or cylinder (a distant light's, a dome's and a portal's light
+    /// leave no surface; a geometry light's shaping isn't held).
     pub fn shaped(self) -> bool {
-        !matches!(self, LightKind::Distant | LightKind::Dome)
+        matches!(
+            self,
+            LightKind::Rect | LightKind::Disk | LightKind::Sphere | LightKind::Cylinder
+        )
+    }
+
+    /// Whether Studio's light of the kind takes ShadowAPI (a portal casts
+    /// none, a geometry light's shadow controls aren't held).
+    pub fn shadowed(self) -> bool {
+        !matches!(self, LightKind::Portal | LightKind::Geometry)
     }
 
     /// UsdLux light types that are not read, and why: they are left out
     /// with a warning.
     pub fn unread(name: &str) -> Option<&'static str> {
         match name {
-            "PortalLight" | "GeometryLight" => Some("is not read"),
             "PluginLight" | "PluginLightFilter" => {
                 Some("names a renderer's own shader, which no engine has")
             }
@@ -106,6 +130,12 @@ impl LightKind {
         }
     }
 }
+
+/// A mesh light's `light:materialSyncMode` where MeshLightAPI applies.
+pub const MESH_SYNC: &str = "materialGlowTintsLight";
+/// LightAPI's `light:materialSyncMode` (a GeometryLight's, or a Mesh
+/// applying LightAPI alone).
+pub const LIGHT_SYNC: &str = "noMaterialResponse";
 
 /// ShapingAPI's inputs, as authored or their fallbacks.
 #[derive(Clone, Debug, PartialEq)]
@@ -235,6 +265,13 @@ pub struct Light {
     /// Whether the camera sees it, as the first of [`CAMERA_READ`] authored
     /// says; none: no attribute does.
     pub camera: Option<bool>,
+    /// `light:materialSyncMode` (Geometry): what the mesh shows and whether
+    /// its material's glow tints the light.
+    pub material_sync: Token,
+    /// `portals` (Dome): the portals it lights through, as authored.
+    pub portals: Vec<Path>,
+    /// `geometry` (a GeometryLight): the prim that emits, as authored.
+    pub geometry: Option<Path>,
 }
 
 impl Light {
@@ -271,6 +308,9 @@ impl Light {
             shaping: None,
             shadow: Shadow::default(),
             camera: None,
+            material_sync: Token::new(LIGHT_SYNC),
+            portals: Vec::new(),
+            geometry: None,
         }
     }
 
@@ -299,8 +339,9 @@ fn color(value: Option<Value>) -> Option<[f64; 3]> {
 }
 
 /// Whether LightAPI's light or shadow links narrow what the light at `path`
-/// lights or shadows, which Studio doesn't hold yet: an exclude, the root
-/// left out (`includeRoot`, on by default), or a membership expression.
+/// lights or shadows, which Studio doesn't hold (the owner, 2026-11-09):
+/// an exclude, the root left out (`includeRoot`, on by default), or a
+/// membership expression.
 pub(super) fn links_narrowed(layer: &LayerData, path: &Path, time: Time) -> bool {
     ["lightLink", "shadowLink"].iter().any(|link| {
         let name = |part: &str| format!("collection:{link}:{part}");
@@ -372,6 +413,13 @@ pub(super) fn read(
                 _ => Token::new("scene"),
             });
         light.ground = color(value_at(layer, source, "kinogaki:groundColor", time));
+        light.portals = targets(layer, source, "portals");
+    }
+    if kind == LightKind::Geometry {
+        light.geometry = targets(layer, source, "geometry").into_iter().next();
+        if let Some(Value::Token(sync)) = value_at(layer, source, "light:materialSyncMode", time) {
+            light.material_sync = sync;
+        }
     }
     if applies(layer, source, "ShapingAPI") || authors(layer, source, "inputs:shaping:") {
         let fallback = Shaping::default();
@@ -400,8 +448,31 @@ pub(super) fn read(
     light
 }
 
+/// The targets of relationship `name` of the prim at `source`.
+fn targets(layer: &LayerData, source: &Path, name: &str) -> Vec<Path> {
+    match layer.get(&source.property(name), field::TARGET_PATHS) {
+        Some(Value::PathListOp(list)) => list.applied(),
+        _ => Vec::new(),
+    }
+}
+
+/// The light the Mesh at `source` is, when it applies MeshLightAPI or
+/// LightAPI: LightAPI's inputs as authored, its sync mode MeshLightAPI's
+/// fallback ([`MESH_SYNC`]) or LightAPI's ([`LIGHT_SYNC`]).
+pub(super) fn mesh_light(layer: &LayerData, source: &Path, time: Time) -> Option<Light> {
+    let mesh = applies(layer, source, "MeshLightAPI");
+    if !mesh && !applies(layer, source, "LightAPI") {
+        return None;
+    }
+    let mut light = read(layer, source, (LightKind::Geometry, "Mesh"), time);
+    if mesh && value_at(layer, source, "light:materialSyncMode", time).is_none() {
+        light.material_sync = Token::new(MESH_SYNC);
+    }
+    Some(light)
+}
+
 /// Whether the prim at `source` applies the API schema `schema`.
-fn applies(layer: &LayerData, source: &Path, schema: &str) -> bool {
+pub(super) fn applies(layer: &LayerData, source: &Path, schema: &str) -> bool {
     match layer.get(source, "apiSchemas") {
         Some(Value::TokenListOp(list)) => list.applied().iter().any(|t| t.as_str() == schema),
         _ => false,
@@ -433,31 +504,11 @@ pub(super) fn write(author: &mut Author, path: &Path, light: &Light) {
     let asset = |author: &mut Author, name: &str, file: &Token| {
         author.attribute(path, name, "asset", Value::Asset(file.clone()), false);
     };
-    float(author, "intensity", light.intensity);
-    float(author, "exposure", light.exposure);
-    color(author, "inputs:color", light.color);
-    flag(
-        author,
-        "inputs:enableColorTemperature",
-        light.enable_color_temperature,
-    );
-    float(author, "colorTemperature", light.color_temperature);
-    if light.kind != LightKind::Dome {
-        flag(author, "inputs:normalize", light.normalize);
-    }
-    float(author, "diffuse", light.diffuse);
-    float(author, "specular", light.specular);
-    // Kinogaki's own attributes, which no schema declares: custom.
-    let own = |author: &mut Author, name: &str, type_name: &str, value: Value| {
-        let at = author.attribute(path, name, type_name, value, type_name == "token");
-        author.property_metadata(&at, "custom", Value::Bool(true));
-    };
-    if let Some(emission) = &light.kinogaki_emission {
-        let emission = Value::Token(emission.as_str().into());
-        own(author, "kinogaki:emission", "token", emission);
+    if light.kind != LightKind::Portal {
+        inputs(author, path, light);
     }
     match light.kind {
-        LightKind::Rect => {
+        LightKind::Rect | LightKind::Portal => {
             float(author, "width", light.width);
             float(author, "height", light.height);
         }
@@ -483,9 +534,13 @@ pub(super) fn write(author: &mut Author, path: &Path, light: &Light) {
             }
             if let Some([r, g, b]) = light.ground {
                 let value = Value::Vec3f([r as f32, g as f32, b as f32]);
-                own(author, "kinogaki:groundColor", "color3f", value);
+                own(author, path, "kinogaki:groundColor", "color3f", value);
+            }
+            if !light.portals.is_empty() {
+                author.relationship(path, "portals", light.portals.clone());
             }
         }
+        LightKind::Geometry => sync_mode(author, path, light, LIGHT_SYNC),
     }
     if let Some(file) = &light.texture {
         asset(author, "inputs:texture:file", file);
@@ -517,10 +572,65 @@ pub(super) fn write(author: &mut Author, path: &Path, light: &Light) {
         float(author, "shadow:falloff", shadow.falloff);
         float(author, "shadow:falloffGamma", shadow.falloff_gamma);
     }
-    own(
+    if light.kind.shadowed() {
+        let seen = Value::Bool(light.camera.unwrap_or(false));
+        own(author, path, CAMERA, "bool", seen);
+    }
+}
+
+/// Author `light` (a geometry light) on the Mesh prim at `path` as
+/// MeshLightAPI: LightAPI's inputs, its sync mode where it isn't
+/// MeshLightAPI's fallback.
+pub(super) fn write_mesh_light(author: &mut Author, path: &Path, light: &Light) {
+    author.api_schema(path, "MeshLightAPI");
+    inputs(author, path, light);
+    sync_mode(author, path, light, MESH_SYNC);
+}
+
+/// `light:materialSyncMode` where it isn't `fallback`.
+fn sync_mode(author: &mut Author, path: &Path, light: &Light, fallback: &str) {
+    if light.material_sync.as_str() != fallback {
+        let sync = Value::Token(light.material_sync.clone());
+        author.attribute(path, "light:materialSyncMode", "token", sync, true);
+    }
+}
+
+/// Kinogaki's attribute `name` of `type_name`, which no schema declares:
+/// custom.
+fn own(author: &mut Author, path: &Path, name: &str, type_name: &str, value: Value) {
+    let at = author.attribute(path, name, type_name, value, type_name == "token");
+    author.property_metadata(&at, "custom", Value::Bool(true));
+}
+
+/// LightAPI's inputs of `light` on the prim at `path`: intensity,
+/// exposure, color and temperature, Normalize (not a dome's), Diffuse,
+/// Specular, and Kinogaki's emission.
+fn inputs(author: &mut Author, path: &Path, light: &Light) {
+    let float = |author: &mut Author, name: &str, value: f64| {
+        let name = format!("inputs:{name}");
+        author.attribute(path, &name, "float", Value::Float(value as f32), false);
+    };
+    let flag = |author: &mut Author, name: &str, value: bool| {
+        author.attribute(path, name, "bool", Value::Bool(value), false);
+    };
+    float(author, "intensity", light.intensity);
+    float(author, "exposure", light.exposure);
+    let [r, g, b] = light.color;
+    let value = Value::Vec3f([r as f32, g as f32, b as f32]);
+    author.attribute(path, "inputs:color", "color3f", value, false);
+    flag(
         author,
-        CAMERA,
-        "bool",
-        Value::Bool(light.camera.unwrap_or(false)),
+        "inputs:enableColorTemperature",
+        light.enable_color_temperature,
     );
+    float(author, "colorTemperature", light.color_temperature);
+    if light.kind != LightKind::Dome {
+        flag(author, "inputs:normalize", light.normalize);
+    }
+    float(author, "diffuse", light.diffuse);
+    float(author, "specular", light.specular);
+    if let Some(emission) = &light.kinogaki_emission {
+        let emission = Value::Token(emission.as_str().into());
+        own(author, path, "kinogaki:emission", "token", emission);
+    }
 }

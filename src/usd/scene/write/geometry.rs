@@ -110,6 +110,9 @@ impl Writer<'_> {
     /// Author `mesh` at `path` as a Mesh prim.
     pub(super) fn mesh(&self, author: &mut Author, path: &Path, mesh: &Mesh) -> Result<()> {
         author.prim(path, "Mesh");
+        if let Some(light) = &mesh.light {
+            super::super::light::write_mesh_light(author, path, light);
+        }
         points(author, path, &mesh.points);
         author.attribute(
             path,

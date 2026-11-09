@@ -162,6 +162,7 @@ fn authored(path: &Path, megabytes: usize) {
         subdivision: Default::default(),
         subsets: Vec::new(),
         double_sided: false,
+        light: None,
     };
     let mut scene = Scene::default();
     scene.nodes.push(Node::group("World", None));

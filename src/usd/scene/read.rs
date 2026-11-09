@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use super::bindings::{self, Binding, Level, Memberships};
 use super::light::LightKind;
-use super::values::{Time, token_at};
+use super::values::{Time, token_at, value_at};
 use super::xform::local_transform;
 use super::{
     Asset, AssetSource, Node, NodeKind, Prototype, Scene, UpAxis, camera, curves, instancer, light,
@@ -319,6 +319,11 @@ impl Walker<'_> {
                         self.levels.pop();
                     }
                 }
+                if mesh.light.is_some() && light::links_narrowed(layer, path, time) {
+                    self.warn(format!(
+                        "{path}: its light and shadow links are left out; it lights and shadows everything"
+                    ));
+                }
                 NodeKind::Mesh(Box::new(mesh))
             }),
             "BasisCurves" | "NurbsCurves" => {
@@ -335,10 +340,15 @@ impl Walker<'_> {
                     instancer::read(layer, path, prototypes, time)
                         .map(|i| NodeKind::Instancer(Box::new(i)))
                 }),
-            name if LightKind::unread(name).is_some() => Err(format!(
-                "{name} {}",
-                LightKind::unread(name).unwrap_or_default()
-            )),
+            name if LightKind::unread(name).is_some() => {
+                let shader = ["info:id", "light:shaderId", "lightFilter:shaderId"]
+                    .iter()
+                    .find_map(|n| value_at(layer, path, n, time)?.as_token().cloned())
+                    .filter(|id| !id.is_empty())
+                    .map_or(String::new(), |id| format!(" ({id})"));
+                let why = LightKind::unread(name).unwrap_or_default();
+                Err(format!("{name}{shader} {why}"))
+            }
             name => match (
                 LightKind::of_type(name),
                 shapes::read(layer, path, name, time),
@@ -366,10 +376,30 @@ impl Walker<'_> {
                 (None, None) => Ok(NodeKind::Group),
             },
         };
-        read.unwrap_or_else(|why| {
+        let kind = read.unwrap_or_else(|why| {
             self.warn(format!("{path}: {why}; read as a group"));
             NodeKind::Group
-        })
+        });
+        self.unread_light(path, type_name, &kind);
+        kind
+    }
+
+    /// Says what of a prim's being a light isn't read: VolumeLightAPI (a
+    /// UsdVol Volume, which isn't read), or LightAPI on a prim that isn't a
+    /// Mesh (only a Mesh is a geometry light).
+    fn unread_light(&mut self, path: &Path, type_name: &Token, kind: &NodeKind) {
+        let applies = |schema: &str| light::applies(self.layer, path, schema);
+        if applies("VolumeLightAPI") {
+            self.warn(format!(
+                "{path}: its VolumeLightAPI is left out (a {type_name} isn't read as a volume)"
+            ));
+        } else if (applies("LightAPI") || applies("MeshLightAPI"))
+            && !matches!(kind, NodeKind::Mesh(_) | NodeKind::Light(_))
+        {
+            self.warn(format!(
+                "{path}: LightAPI on a {type_name} is left out (only a Mesh emits as a light)"
+            ));
+        }
     }
 
     /// The prototype the instance at `path` shows: its source's children.

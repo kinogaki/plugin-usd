@@ -28,6 +28,9 @@ pub struct Mesh {
     pub subsets: Vec<Subset>,
     /// `doubleSided`.
     pub double_sided: bool,
+    /// The light it is (MeshLightAPI or LightAPI applied: a geometry
+    /// light), none when it is none.
+    pub light: Option<Box<super::Light>>,
 }
 
 impl Mesh {
@@ -182,6 +185,7 @@ pub(super) fn read(
         double_sided: (value_at(layer, prim, "doubleSided", Time::Default))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        light: super::light::mesh_light(layer, prim, time).map(Box::new),
     };
     let mut primvars = read_primvars(layer, prim, &["normals", "velocities"], time);
     primvars.retain(|primvar| {

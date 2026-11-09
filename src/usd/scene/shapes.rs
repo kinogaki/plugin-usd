@@ -98,6 +98,7 @@ impl Shape {
             subdivision: Subdivision::default(),
             subsets: Vec::new(),
             double_sided: self.double_sided,
+            light: None,
         }
     }
 

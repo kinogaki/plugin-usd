@@ -15,6 +15,7 @@ mod lights;
 mod materials;
 mod materialx;
 mod measure;
+mod portals;
 mod primvars;
 mod subdivision;
 mod support;

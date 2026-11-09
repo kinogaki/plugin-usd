@@ -252,6 +252,7 @@ fn grid(output: &str, n: usize, megabytes: Option<usize>) -> Result<()> {
         subdivision: Subdivision::default(),
         subsets: Vec::new(),
         double_sided: false,
+        light: None,
     };
     let mut scene = Scene::default();
     scene.nodes.push(Node::group("World", None));

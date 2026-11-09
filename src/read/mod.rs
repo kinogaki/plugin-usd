@@ -23,6 +23,7 @@ mod files;
 mod geometry;
 mod libraries;
 mod materials;
+mod named;
 mod primvars;
 
 use crate::lights;
@@ -35,6 +36,7 @@ use crate::usd::sdf::{Path, Token};
 use crate::usd::{ErrorKind, Stage, StageOptions};
 use files::{Files, Held};
 use geometry::Shaping;
+use kinogaki_render_api::standard::LightShape;
 use kinogaki_studio_api::edit::editor::{Placed, gather};
 use kinogaki_studio_api::format::files::Named;
 use kinogaki_studio_api::geometry::image::{ImageColor, ImageSource};
@@ -44,7 +46,7 @@ use kinogaki_studio_api::geometry::{
 use kinogaki_studio_api::standard::{self, Instances, MAX_DEPTH, Materials};
 use kinogaki_studio_api::value::ImageRef;
 use kinogaki_studio_api::{
-    Data, Diagnostic, Error, FileItem, FormatOptions, Imported, Input, Purpose, Reading,
+    Data, Diagnostic, Error, FileItem, FormatOptions, Imported, Input, ObjectRef, Purpose, Reading,
 };
 use libraries::Place;
 use primvars::Spread;
@@ -125,7 +127,8 @@ pub(crate) fn read(
         let placed = walk.node(node, &at)?;
         at.push(placed);
     }
-    let Walk { items, .. } = walk;
+    let Walk { mut items, .. } = walk;
+    named::resolve(&scene, &at, &mut items, &mut warnings);
     let mut warnings = said(warnings);
     warnings.extend(named.warnings());
     Ok(Imported { items, warnings })
@@ -274,8 +277,50 @@ impl Walk<'_, '_> {
                 ..FileItem::top(node.name.to_string(), instance)
             });
         }
+        if let NodeKind::Mesh(mesh) = &node.kind
+            && let Some(light) = &mesh.light
+            && self.items[item].data.is_some()
+        {
+            let path = self.scene.path(k);
+            self.mesh_light(light, node, item, &path)?;
+        }
         self.library(Place::Under(Some(k)), Some(item));
         Ok(At { item, world })
+    }
+
+    /// The geometry light the mesh `node` (its item `mesh`, the prim at
+    /// `path`) is, as an item beside it named after it, emitting from it.
+    fn mesh_light(
+        &mut self,
+        light: &crate::usd::scene::Light,
+        node: &Node,
+        mesh: usize,
+        path: &Path,
+    ) -> Result<(), Error> {
+        if let Some(lost) = lights::left_out(light) {
+            self.warnings.push(format!("{path}: {lost}"));
+        }
+        let scale = self.shaping.space.scale();
+        let made = lights::light(light, scale, lights::Files::default(), self.reading.colors);
+        let made = made.map(|mut light| {
+            if let LightShape::Geometry { geometry, .. } = &mut light.shape {
+                *geometry = Some(ObjectRef(mesh as u64));
+            }
+            light
+        });
+        match made.and_then(|l| standard::light().wrap(l)) {
+            Ok(data) => self.items.push(FileItem {
+                name: format!("{} Light", node.name),
+                parent: self.items[mesh].parent,
+                placement: Xform::IDENTITY,
+                visible: node.visible,
+                data: Some(data),
+            }),
+            Err(e) => self
+                .warnings
+                .push(format!("{path}: its light {}; left out", e.message())),
+        }
+        Ok(())
     }
 
     /// What `node`, the prim at `path`, holds as a value; none for a
