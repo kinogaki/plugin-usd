@@ -2,8 +2,9 @@
 //! meshes (implicit shapes as the meshes they tessellate to) with their
 //! primvars as attributes ([`super::primvars`]), each face's material (a
 //! GeomSubset's binding over its mesh's), GeomSubsets of family `part` as
-//! the faces' `part` and the others as groups; curves; points. What is left
-//! out is said with the prim's path.
+//! the faces' `part` and the others as groups, and their subdivision
+//! ([`crate::subdivision`]); curves; points. What is left out is said with
+//! the prim's path.
 use super::primvars::{self, Spread};
 use crate::usd::scene::{
     CurveBasis, CurveForm, CurveWrap, Curves, Interpolation, Mesh, Points, Primvar, SubsetElement,
@@ -37,9 +38,8 @@ pub(super) fn mesh(
 ) -> Result<Geometry, Error> {
     let counts = &mesh.face_vertex_counts;
     let indices = &mesh.face_vertex_indices;
-    let holes: std::collections::HashSet<i32> =
-        mesh.subdivision.hole_indices.iter().copied().collect();
-    // Faces kept: at least three corners, no point twice, no hole.
+    // Faces kept: at least three corners, no point twice (a hole is kept,
+    // in `subdivision_hole`).
     let mut starts = Vec::with_capacity(counts.len() + 1);
     let mut at = 0usize;
     for &n in counts.iter() {
@@ -50,13 +50,13 @@ pub(super) fn mesh(
     let kept: Vec<u32> = (0..counts.len() as u32)
         .filter(|&f| {
             let corners = &indices[starts[f as usize]..starts[f as usize + 1]];
-            corners.len() >= 3 && !repeats(corners) && !holes.contains(&(f as i32))
+            corners.len() >= 3 && !repeats(corners)
         })
         .collect();
     let dropped = counts.len() - kept.len();
     if dropped > 0 {
         warnings.push(format!(
-            "{prim}: {dropped} faces with fewer than three corners, a point twice, or holes, left out"
+            "{prim}: {dropped} faces with fewer than three corners or a point twice, left out"
         ));
     }
     // Each kept corner's corner in the file: reversed where the mesh winds
@@ -174,6 +174,9 @@ pub(super) fn mesh(
         let text = Text::from_strs(kept.iter().map(|&f| parts[f as usize]));
         attributes = attributes.with(Domain::Primitive, standard::PART, Attribute::text(text))?;
     }
+    let mut said = Vec::new();
+    attributes = crate::subdivision::read(&mesh.subdivision, &table, &kept, attributes, &mut said)?;
+    warnings.extend(said.into_iter().map(|s| format!("{prim}: {s}")));
     Geometry::new(positions.into(), table, attributes)
 }
 

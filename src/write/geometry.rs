@@ -6,17 +6,17 @@
 //! `materialBind` where they differ, each named after the primitive group
 //! holding exactly its faces when there is one), its `part` as GeomSubsets
 //! of family `part`, and its other primitive and point groups as
-//! GeomSubsets; its curves and points as [`super::curves`] writes them.
+//! GeomSubsets, its subdivision as [`crate::subdivision`] writes it (normals
+//! only where it doesn't subdivide); its curves and points as
+//! [`super::curves`] writes them.
 use super::curves;
 use crate::names;
-use crate::usd::scene::{
-    Interpolation, Mesh, NodeKind, Primvar, Subdivision, Subset, SubsetElement,
-};
+use crate::usd::scene::{Interpolation, Mesh, NodeKind, Primvar, Subset, SubsetElement};
 use crate::usd::sdf::{Array, Token, Value as Usd};
 use kinogaki_studio_api::color::{ColorService, LIN_REC709};
 use kinogaki_studio_api::format::Unique;
 use kinogaki_studio_api::geometry::{
-    Attribute, Domain, Geometry, Kind, Meaning, Text, Values, names as standard,
+    Attribute, Domain, Geometry, Kind, Meaning, Subdivision, Text, Values, names as standard,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -147,6 +147,9 @@ fn mesh(
             corners.extend(table.primitive_vertices(p));
         }
     }
+    // A subdivision surface's normals are its shape's (USD ignores authored
+    // ones): written only where the mesh doesn't subdivide.
+    let subdivides = Subdivision::of(value).is_some();
     let mut primvars = Vec::new();
     for (domain, name, attribute) in value.attributes().iter() {
         let (interpolation, picked) = match domain {
@@ -156,7 +159,10 @@ fn mesh(
             Domain::Detail => (Interpolation::Constant, None),
             _ => continue,
         };
-        if matches!(name, standard::MATERIAL | standard::PART) {
+        if matches!(name, standard::MATERIAL | standard::PART)
+            || crate::subdivision::is_tag(domain, name)
+            || (name == standard::N && subdivides)
+        {
             continue;
         }
         match primvar(name, attribute, interpolation, picked, cx.colors, warnings) {
@@ -184,7 +190,10 @@ fn mesh(
             ),
             _ => continue,
         };
-        if !name.starts_with('.') && !indices.is_empty() {
+        if !name.starts_with('.')
+            && !indices.is_empty()
+            && !crate::subdivision::is_tag(domain, name)
+        {
             groups.push((name, element, indices));
         }
     }
@@ -225,7 +234,7 @@ fn mesh(
         face_vertex_indices: Arc::new(indices),
         left_handed: false,
         primvars,
-        subdivision: Subdivision::default(),
+        subdivision: crate::subdivision::write(value, polygons),
         subsets,
         double_sided,
     };

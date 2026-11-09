@@ -16,4 +16,5 @@ mod materials;
 mod materialx;
 mod measure;
 mod primvars;
+mod subdivision;
 mod support;

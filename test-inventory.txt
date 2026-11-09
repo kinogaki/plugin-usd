@@ -71,6 +71,7 @@ kinogaki-usd/format test measure::the_grid_writes_and_reads_back_whole
 kinogaki-usd/format test primvars::a_primvar_no_attribute_holds_is_left_out_with_its_prim_named
 kinogaki-usd/format test primvars::a_rest_primvar_reads_as_rest_positions_moved_into_the_project
 kinogaki-usd/format test primvars::a_transform_primvar_reads_as_placements_in_the_project
+kinogaki-usd/format test subdivision::every_subdivision_attribute_reads_writes_and_reads_back
 kinogaki-usd/lib test lights::tests::a_lens_is_millimetres_whatever_the_stage_unit
 kinogaki-usd/lib test lights::tests::lights_read_and_write_back_in_any_units
 kinogaki-usd/lib test names::tests::file_names_end_asset_paths_inside_packages_too

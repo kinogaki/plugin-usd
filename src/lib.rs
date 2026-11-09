@@ -22,6 +22,7 @@ mod names;
 mod read;
 mod shading;
 mod space;
+mod subdivision;
 mod write;
 
 use kinogaki_studio_api::format::options;

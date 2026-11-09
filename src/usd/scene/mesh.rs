@@ -47,13 +47,42 @@ impl Mesh {
     }
 }
 
-/// Subdivision tags (`subdivisionScheme`, creases, corners, holes).
+/// Kinogaki's attribute holding how many times a subdivision mesh is
+/// refined (USD has none: a refinement level is a renderer's).
+pub const LEVEL: &str = "kinogaki:subdivisionLevel";
+
+/// The attributes holding a mesh's refinement level, in the order they are
+/// read, the first authored one deciding: ours, Arnold's (and its older
+/// spelling), Omniverse's (only with `refinementEnableOverride` on).
+pub const LEVEL_READ: [&str; 4] = [
+    LEVEL,
+    "primvars:arnold:subdiv_iterations",
+    "arnold:subdiv_iterations",
+    OMNIVERSE_LEVEL,
+];
+
+/// Omniverse's refinement level, read where its override is on.
+const OMNIVERSE_LEVEL: &str = "refinementLevel";
+
+/// The primvar a level is read from too, taken in rather than kept as a
+/// primvar.
+const ARNOLD_PRIMVAR: &str = "arnold:subdiv_iterations";
+
+/// Subdivision tags (`subdivisionScheme`, its options, creases, corners,
+/// holes) and the refinement level.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Subdivision {
     /// `catmullClark` (USD's fallback), `loop`, `bilinear` or `none`.
     pub scheme: Token,
+    /// How many times it is refined, when an attribute says: ours, Arnold's
+    /// or Omniverse's (`LEVEL_READ`).
+    pub level: Option<i32>,
     /// `interpolateBoundary` (`edgeAndCorner` by default).
     pub interpolate_boundary: Token,
+    /// `faceVaryingLinearInterpolation` (`cornersPlus1` by default).
+    pub face_varying: Token,
+    /// `triangleSubdivisionRule` (`catmullClark` by default).
+    pub triangle_rule: Token,
     /// Point indices of crease chains, `crease_lengths` points each.
     pub crease_indices: Vec<i32>,
     /// Points per crease chain.
@@ -73,7 +102,10 @@ impl Default for Subdivision {
     fn default() -> Subdivision {
         Subdivision {
             scheme: Token::new("none"),
+            level: None,
             interpolate_boundary: Token::new("edgeAndCorner"),
+            face_varying: Token::new("cornersPlus1"),
+            triangle_rule: Token::new("catmullClark"),
             crease_indices: Vec::new(),
             crease_lengths: Vec::new(),
             crease_sharpnesses: Vec::new(),
@@ -162,6 +194,8 @@ pub(super) fn read(
         }
         fits
     });
+    // Arnold's level is the mesh's level, not one of its primvars.
+    primvars.retain(|primvar| primvar.name.as_str() != ARNOLD_PRIMVAR);
     mesh.primvars = primvars;
     mesh.subsets = subsets(layer, prim, &mesh, time, warnings);
     Ok(mesh)
@@ -181,9 +215,22 @@ fn subdivision(layer: &LayerData, prim: &Path, time: Time) -> Subdivision {
             .map(|(v, _)| v)
             .unwrap_or_default()
     };
+    let on = |name: &str| (value_at(layer, prim, name, time)).and_then(|v| v.as_bool());
+    let level = (LEVEL_READ.iter())
+        .filter(|&&name| name != OMNIVERSE_LEVEL || on("refinementEnableOverride") == Some(true))
+        .find_map(|name| value_at(layer, prim, name, time)?.as_f64())
+        .map(|level| level.round().clamp(0.0, f64::from(i32::MAX)) as i32);
     Subdivision {
         scheme: token_at(layer, prim, "subdivisionScheme", "catmullClark"),
+        level,
         interpolate_boundary: token_at(layer, prim, "interpolateBoundary", "edgeAndCorner"),
+        face_varying: token_at(
+            layer,
+            prim,
+            "faceVaryingLinearInterpolation",
+            "cornersPlus1",
+        ),
+        triangle_rule: token_at(layer, prim, "triangleSubdivisionRule", "catmullClark"),
         crease_indices: integers("creaseIndices"),
         crease_lengths: integers("creaseLengths"),
         crease_sharpnesses: numbers("creaseSharpnesses"),

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use super::Writer;
 use crate::usd::error::{Error, Result};
+use crate::usd::scene::mesh::LEVEL;
 use crate::usd::scene::{
     Author, CurveBasis, CurveForm, CurveWrap, Curves, Instancer, Matrix4d, Mesh, Node, NodeKind,
     Points, Primvar, Shape, ShapeForm, SubsetElement,
@@ -134,9 +135,31 @@ impl Writer<'_> {
         let tags = &mesh.subdivision;
         let scheme = Value::Token(tags.scheme.clone());
         author.attribute(path, "subdivisionScheme", "token", scheme, true);
-        if tags.interpolate_boundary.as_str() != "edgeAndCorner" {
-            let boundary = Value::Token(tags.interpolate_boundary.clone());
-            author.attribute(path, "interpolateBoundary", "token", boundary, false);
+        if let Some(level) = tags.level.filter(|_| tags.scheme.as_str() != "none") {
+            // Kinogaki's own, which no schema declares: custom.
+            let at = author.attribute(path, LEVEL, "int", Value::Int(level), true);
+            author.property_metadata(&at, "custom", Value::Bool(true));
+        }
+        for (name, value, fallback) in [
+            (
+                "interpolateBoundary",
+                &tags.interpolate_boundary,
+                "edgeAndCorner",
+            ),
+            (
+                "faceVaryingLinearInterpolation",
+                &tags.face_varying,
+                "cornersPlus1",
+            ),
+            (
+                "triangleSubdivisionRule",
+                &tags.triangle_rule,
+                "catmullClark",
+            ),
+        ] {
+            if value.as_str() != fallback {
+                author.attribute(path, name, "token", Value::Token(value.clone()), false);
+            }
         }
         let signed = |values: &[i32]| Value::Array(Array::Int(Arc::new(values.to_vec())));
         let reals = |values: &[f64]| {
