@@ -152,6 +152,13 @@ impl Stage {
         self.composer.is_single_layer()
     }
 
+    /// Whether the stage composed layers of other files than its root
+    /// layer's (sublayers, references, payloads; the files packed in its
+    /// package aside): what a flattened copy would hold of theirs.
+    pub fn composes_other_files(&self) -> bool {
+        (self.composer.layers).outside(self.composer.root_layer_index())
+    }
+
     /// The composed stage as one layer, as `usdcat --flatten` writes it
     /// (instances referencing prototypes, the "Generated from" note).
     pub fn flatten(&mut self) -> Result<LayerData> {

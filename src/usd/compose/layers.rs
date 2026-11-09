@@ -171,6 +171,21 @@ impl Layers {
         identity
     }
 
+    /// Whether the composition opened a layer of another file than layer
+    /// `root`'s (one it names, opened or not), the files packed in it
+    /// aside, and anonymous layers.
+    pub fn outside(&self, root: usize) -> bool {
+        let Some(own) =
+            (self.by_identity.iter()).find_map(|(identity, &at)| (at == root).then_some(identity))
+        else {
+            return false;
+        };
+        let packed = format!("{own}[");
+        (self.by_identity.keys()).any(|identity| {
+            identity != own && !identity.starts_with(&packed) && !identity.starts_with("anon:")
+        })
+    }
+
     /// The layer's metadata field `name` (on its pseudo-root).
     pub fn field(&self, index: usize, name: &str) -> Option<&Value> {
         self.layer(index).root().get(name)

@@ -76,6 +76,7 @@ pub(crate) fn read(
     let mut stage = opened.map_err(|e| failed(input, e))?;
     let scene = crate::usd::scene::read(&mut stage, &ReadOptions::default())
         .map_err(|e| failed(input, e))?;
+    let flattened = stage.composes_other_files();
     drop(stage);
     reading.check()?;
     let stage_units = space::units(scene.meters_per_unit, scene.up_axis)
@@ -141,6 +142,7 @@ pub(crate) fn read(
         warnings,
         units: kept,
         metadata,
+        flattened,
     })
 }
 

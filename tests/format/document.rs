@@ -59,3 +59,28 @@ fn a_document_read_keeps_the_stages_units() {
         .unwrap();
     assert_eq!(floor.positions().as_slice()[2], [200.0, 200.0, 0.0]);
 }
+
+#[test]
+fn a_stage_composed_of_other_files_says_it_flattens_them() {
+    let scratch = Scratch::new("usd-flattened");
+    let read = |name: &str| {
+        let reading = Reading::new(Purpose::Document, Units::METERS, &Unconverted);
+        let path = scratch.join(name);
+        Usd.read(&Input::file(&path), &Usd.options(), &reading)
+            .unwrap()
+    };
+    std::fs::write(scratch.join("part.usda"), CENTIMETRES).unwrap();
+    // A sublayer and a reference to another file: their content flattened.
+    let sublayer = "#usda 1.0\n(\n    subLayers = [@./part.usda@]\n)\n";
+    std::fs::write(scratch.join("sublayer.usda"), sublayer).unwrap();
+    let reference =
+        "#usda 1.0\ndef Xform \"Shelf\" (\n    references = @./part.usda@</World>\n)\n{\n}\n";
+    std::fs::write(scratch.join("reference.usda"), reference).unwrap();
+    // Arcs inside the file alone: nothing of another file's.
+    let internal = "#usda 1.0\ndef Xform \"Proto\"\n{\n}\ndef Xform \"Copy\" (\n    instanceable = true\n    references = </Proto>\n)\n{\n}\n";
+    std::fs::write(scratch.join("internal.usda"), internal).unwrap();
+    assert!(read("sublayer.usda").flattened);
+    assert!(read("reference.usda").flattened);
+    assert!(!read("internal.usda").flattened);
+    assert!(!read("part.usda").flattened);
+}
