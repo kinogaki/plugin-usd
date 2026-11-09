@@ -25,6 +25,31 @@ File ▸ Export writes one layer in the project's units (`metersPerUnit`, `upAxi
 - **Prims**: polygons as a Mesh with its attributes as primvars (`uv` as `st`, `name` a uniform string, and the rest as read; colors in linear Rec.709, USD's own, which other applications read a primvar in whatever its `colorSpace` says), double-sided as its materials are, its faces' materials as bindings (GeomSubsets of family `materialBind` where they differ, each named after the primitive group holding exactly its faces, which isn't written again, so a file's subsets come back once however many round trips), its `part` as GeomSubsets of family `part`, and its other primitive and point groups as GeomSubsets; curves as BasisCurves or NurbsCurves, one prim for each kind, degree, closing and material, bound to it, a polyline closing on its first point periodic without it; points alone as Points; curves' and points' attributes as primvars, as a mesh's (`width` as `widths`, a point's `id` as `ids`); what the host makes polygons of (a B-rep) meshed; lights (a dome whose pole isn't its own +Y a DomeLight_1, naming the portals written that name it in its `portals`; a portal a PortalLight; a geometry light no prim but MeshLightAPI and its inputs on the mesh it names, a mesh two lights name taking the first's, said; ShapingAPI and, off its fallbacks, ShadowAPI applied; `kinogaki:visibility:camera` on every light that has the row) and cameras. An item's value is its own prim when it is one prim and the item holds no children; else the item is an Xform and the value's prims are beneath it (`Geometry`, `Curves`), named beside its children: a gprim holds no prims (UsdGeom's encapsulation rule).
 - **Instances as USD's instancing**, never copies. Each prototype is written once, beneath the default prim's `Prototypes`, a `class` prim, so no traversal draws it in place (OpenUSD's advice in UsdGeomPointInstancer's schema), named after the first instance showing it; whatever shows it references it. One instance (as an instanceable prim imports) is an instanceable prim referencing its prototype. Several (as a point instancer imports, and as Copy to Points makes them) are a PointInstancer whose `Prototypes` scope holds an instanceable prim for each prototype and material its instances show it in; each instance is placed by `positions`, `orientationsf` (and the half-precision `orientations` for readers before OpenUSD 24.05) and `scales`, its `id` among the `ids`, its `v` the `velocities`, and every other attribute a primvar of one value an instance (`vertex`), as a mesh's are written (`Cd` the `displayColor` in linear Rec.709); its `extent` is its prototypes' bounds where the instances place them. Instances a point instancer can't place (a shear) are each an instanceable prim with its own matrix. A value several items show (duplicates sharing one) is a prototype each of their prims is an instance of. An object with children holds its instance or point instancer in a child prim, since an instance's prim holds nothing of its own. An instance's own `material` binds its prim, `strongerThanDescendants` where its prototype binds materials of its own (Studio renders every one of them in it); a `material_map` shows a prototype written in the materials it maps to, once a map. An instance's name and `part` in a point instancer have no place in USD's instancing and are left out, said.
 
+## Saving back
+
+A USD opened as a document (File ▸ Open) saves back by this writer, with the layer's metadata it read. Once a file is Studio's own (written by a save or an export), a save with nothing changed writes the same bytes, and one value changed is one line of it: the workflows' `usd_round_trip` holds a fixture to both, and its hand run the outside test scene. Two things kept that fixed point: a decomposed transform cleans its scale of float noise as it does its angles (studio-core), and a USD Preview Surface beside a MaterialX network is made from the network as the file holds it, each real a single float (`write/preview.rs`).
+
+The first save of a file from elsewhere loses what Studio doesn't hold; the Console says what, and the hand run (`usd_round_trip::hand_run_test_scene_round_trip`) checks every prim and property of the test scene, composed, that the file written lacks against this list. Its counts, 2026-11-09:
+
+| What is lost | Test scene |
+|---|---|
+| Composition: references, payloads, sublayers and variants flattened into one layer (a composed file saves elsewhere, `Imported::flattened`); instances' and point instancers' prototypes written where Studio holds them | 315 |
+| Inactive prims, and the `proxy` and `guide` purposes | 0 (left out of the composed stage) |
+| Prims of types Studio doesn't hold (RenderSettings, RenderProduct, RenderVar), and `renderSettingsPrimPath` naming them | 4 |
+| xformOp stacks, written as one `xformOp:transform` | 34 |
+| Primvar indices, written unindexed | 72 |
+| `primvars:normals`, written as the mesh's `normals` | 23 |
+| A group's primvars and material binding, which the meshes below it hold | 2 |
+| Left-handed meshes, written right-handed and wound the other way | 21 |
+| Scopes holding no library, written as Xforms | 18 |
+| Material interfaces, NodeGraphs and shaders, written as Studio's networks (MaterialX's nodes and their standard forms, a USD Preview Surface beside) | 554 |
+| Camera exposure | 0 |
+| Attributes Studio doesn't model: `extentsHint`, UsdGeomModelAPI's cards and draw mode, applications' own (`omni:`) | 34 |
+| Attributes authored at their schema's fallback, left unauthored | 6 |
+| Time samples (the start time code's values are kept), collections (as bindings) | not in the test scene |
+
+What a save adds: `kinogaki:` customData, a USD Preview Surface beside MaterialX networks, model kinds by Studio's rule.
+
 ## The model
 
 `src/usd/`: the format's own model, parser and writer.

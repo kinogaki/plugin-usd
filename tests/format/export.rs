@@ -471,3 +471,68 @@ fn layer_metadata_comes_back() {
     assert_eq!(again.metadata, expected);
     assert_eq!(again.units, read.units, "the stage's centimetres, Z up");
 }
+
+/// A working space a tenth brighter than every other: a conversion that
+/// moves a color's last bits, as a configuration's matrices do.
+#[derive(Debug)]
+struct Brighter;
+
+impl kinogaki_studio_api::color::ColorService for Brighter {
+    fn working(&self) -> &str {
+        "ACEScg"
+    }
+    fn convert(
+        &self,
+        from: &str,
+        to: &str,
+        rgb: &mut [[f64; 3]],
+    ) -> Result<(), kinogaki_studio_api::Error> {
+        let k = match (from == self.working(), to == self.working()) {
+            (false, true) => 1.1,
+            (true, false) => 1.0 / 1.1,
+            _ => 1.0,
+        };
+        rgb.iter_mut().flatten().for_each(|c| *c *= k);
+        Ok(())
+    }
+    fn revision(&self) -> u64 {
+        0
+    }
+}
+
+/// A USD Preview Surface beside a MaterialX network is made from the
+/// network as the file holds it (single floats), so a file read and
+/// written again writes the same surfaces: made from the values in
+/// doubles, one of these colors in many comes out a float apart.
+#[test]
+fn a_preview_surface_is_made_of_what_the_file_holds() {
+    use kinogaki_studio_api::Value;
+    let scratch = Scratch::new("usd-preview-back");
+    let materials = (0..200)
+        .map(|k| {
+            let t = f64::from(k) / 199.0;
+            let color = [0.31 + 0.6 * t, 0.77 - 0.5 * t, 0.123 + 0.37 * t];
+            let mut material = plain(&format!("/Looks/M{k}"), &format!("M{k}"));
+            material.inside.nodes[0]
+                .parameters
+                .insert("base_color".into(), Value::Color(color));
+            material
+        })
+        .collect();
+    let first = scratch.join("first.usda");
+    write_in(&first, &[looks(materials)], &Brighter);
+    let read = read_in(&first, &Brighter);
+    let again = scratch.join("again.usda");
+    write_in(&again, &read.items, &Brighter);
+    let (a, b) = (
+        std::fs::read_to_string(&first).unwrap(),
+        std::fs::read_to_string(&again).unwrap(),
+    );
+    let differ: Vec<(&str, &str)> = (a.lines().zip(b.lines())).filter(|(x, y)| x != y).collect();
+    assert!(
+        differ.is_empty(),
+        "{} lines: {:?}",
+        differ.len(),
+        &differ[..differ.len().min(4)]
+    );
+}

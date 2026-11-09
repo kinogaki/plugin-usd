@@ -7,6 +7,7 @@ kinogaki-usd/format test document::a_document_read_keeps_the_stages_units
 kinogaki-usd/format test document::a_stage_composed_of_other_files_says_it_flattens_them
 kinogaki-usd/format test export::a_documents_default_prim_keeps_its_root_prims
 kinogaki-usd/format test export::a_domes_file_held_file_and_node_go_to_a_layer
+kinogaki-usd/format test export::a_preview_surface_is_made_of_what_the_file_holds
 kinogaki-usd/format test export::colors_are_written_in_linear_rec709_as_other_applications_read_them
 kinogaki-usd/format test export::curves_come_back_of_their_basis
 kinogaki-usd/format test export::layer_metadata_comes_back

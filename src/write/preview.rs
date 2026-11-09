@@ -13,7 +13,9 @@
 //! inherits (glTF's sampler has no USD UV Texture form).
 //! A normal map carries over into `normal`. Anything else feeding the
 //! surface (a procedural, arithmetic over two textures) leaves its input at
-//! its default, said.
+//! its default, said. It is made from the network as the file holds it,
+//! each real a single float, so a read of the file makes it again and a
+//! save writes it unchanged.
 use super::materials::definition;
 use crate::names;
 use kinogaki_mtlx::{Type, Value as M};
@@ -33,8 +35,31 @@ const SURFACE: &str = "ND_UsdPreviewSurface_surfaceshader";
 /// translation reaches.
 pub(super) fn preview(seed: &NetworkSeed) -> (Option<NetworkSeed>, Vec<String>) {
     let mut said = Vec::new();
-    let made = make(seed, &mut said);
+    let made = make(&single(seed), &mut said);
     (made, said)
+}
+
+/// `seed` as the file holds it: each real a single float, as MaterialX's
+/// values are written (`float`, `color3f`, `float3`).
+fn single(seed: &NetworkSeed) -> NetworkSeed {
+    let single = |v: &mut f64| *v = f64::from(*v as f32);
+    let mut held = seed.clone();
+    for value in held
+        .nodes
+        .iter_mut()
+        .flat_map(|n| n.parameters.values_mut())
+    {
+        match value {
+            Value::Number(v) => single(v),
+            Value::Numbers(all) => all.iter_mut().for_each(single),
+            Value::Color(rgb) => rgb.iter_mut().for_each(single),
+            _ => {}
+        }
+    }
+    for (_, inside) in &mut held.insides {
+        *inside = self::single(inside);
+    }
+    held
 }
 
 fn make(seed: &NetworkSeed, said: &mut Vec<String>) -> Option<NetworkSeed> {
@@ -503,7 +528,8 @@ mod tests {
         let Some(Value::Color(diffuse)) = input(&made, "diffuseColor") else {
             panic!("no diffuse color");
         };
-        assert!((diffuse[0] - 0.8).abs() < 1e-9 && (diffuse[2] - 0.1).abs() < 1e-9);
+        // Made from the single floats the file holds of the network.
+        assert_eq!([diffuse[0], diffuse[2]], [0.8f32, 0.1f32].map(f64::from));
         assert_eq!(input(&made, "metallic"), Some(Value::Number(1.0)));
         assert_eq!(input(&made, "roughness"), Some(Value::Number(0.25)));
     }
