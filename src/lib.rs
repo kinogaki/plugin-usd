@@ -68,6 +68,9 @@ impl FileFormat for Usd {
     fn label(&self) -> &str {
         "Universal Scene Description"
     }
+    fn short_label(&self) -> &str {
+        "USD"
+    }
     fn extensions(&self) -> &[&str] {
         &["usd", "usda", "usdc", "usdz"]
     }
