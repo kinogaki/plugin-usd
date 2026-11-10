@@ -24,6 +24,7 @@ mod kinds;
 mod materials;
 mod named;
 mod preview;
+mod split;
 
 use crate::lights;
 use crate::names;
@@ -34,18 +35,22 @@ use assets::Assets;
 use geometry::Shaping;
 use instances::Shows;
 use kinogaki_render_api::standard::LightShape;
-use kinogaki_studio_api::format::Unique;
+use kinogaki_studio_api::format::{Unique, options};
 use kinogaki_studio_api::geometry::{UpAxis, Xform};
+use kinogaki_studio_api::params::{Parameter, Schema, ValueKind};
 use kinogaki_studio_api::standard;
 use kinogaki_studio_api::value::ImageRef;
 use kinogaki_studio_api::{
-    Data, DataTypeId, Diagnostic, Error, FileItem, FormatOptions, FormatWriter, Writing,
+    Data, DataTypeId, Diagnostic, Error, FileItem, FormatOptions, FormatWriter, Value, Writing,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path as FilePath;
 use std::sync::{Arc, LazyLock};
 
 pub(crate) struct Writer;
+
+/// The option splitting polygons into prims by their `name` paths.
+const SPLIT: &str = "split_by_name";
 
 /// What it writes: what a read gives, and B-reps through the host's mesher.
 static WRITES: LazyLock<Vec<DataTypeId>> = LazyLock::new(|| {
@@ -59,12 +64,25 @@ impl FormatWriter for Writer {
         &WRITES
     }
 
+    fn options(&self) -> FormatOptions {
+        FormatOptions::from([(SPLIT.to_owned(), Value::Bool(true))])
+    }
+
+    fn schema(&self, chosen: &FormatOptions) -> Schema {
+        let on = options::option(chosen, SPLIT, Value::bool).unwrap_or(true);
+        Schema::default().parameter(
+            Parameter::new(SPLIT, "Split Polygons by Name", ValueKind::Toggle, on).help(
+                "Polygons whose name attribute holds paths each become a prim in that hierarchy",
+            ),
+        )
+    }
+
     fn write(
         &self,
         path: &FilePath,
         items: &[FileItem],
         writing: &Writing<'_>,
-        _: &FormatOptions,
+        chosen: &FormatOptions,
     ) -> Result<Vec<Diagnostic>, Error> {
         let units = writing.units;
         let mut out = Out {
@@ -81,6 +99,7 @@ impl FormatWriter for Writer {
             double_sided: Vec::new(),
             stored: HashMap::new(),
             shared: shared(items),
+            split: options::option(chosen, SPLIT, Value::bool).unwrap_or(true),
             writing,
             warnings: Vec::new(),
         };
@@ -302,6 +321,8 @@ struct Out<'w> {
     stored: HashMap<Of, Option<usize>>,
     /// The values several items show ([`shared`]).
     shared: HashSet<usize>,
+    /// Whether polygons split into prims by their `name` paths.
+    split: bool,
     writing: &'w Writing<'w>,
     warnings: Vec<String>,
 }
@@ -377,7 +398,15 @@ impl Out<'_> {
         };
         let at = self.scene.nodes.len();
         let mut children: Vec<Node> = Vec::new();
+        let splits = (item.data.as_ref())
+            .filter(|data| self.split && !self.shared.contains(&data.identity()))
+            .and_then(|data| standard::geometry().get(data));
+        let split = match splits {
+            Some(value) => self.split_by_name(value, (at, at + 1), names, &mut children)?,
+            None => false,
+        };
         let kinds = match &item.data {
+            _ if split => None,
             Some(data) if self.shared.contains(&data.identity()) => (self.prototype(data, &[])?)
                 .map(|prototype| {
                     Kinds::Instance(Shows {

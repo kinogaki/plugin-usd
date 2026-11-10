@@ -80,6 +80,8 @@ kinogaki-usd/format test portals::what_isnt_held_of_a_light_is_said
 kinogaki-usd/format test primvars::a_primvar_no_attribute_holds_is_left_out_with_its_prim_named
 kinogaki-usd/format test primvars::a_rest_primvar_reads_as_rest_positions_moved_into_the_project
 kinogaki-usd/format test primvars::a_transform_primvar_reads_as_placements_in_the_project
+kinogaki-usd/format test split::one_name_stays_one_prim_and_the_option_turns_it_off
+kinogaki-usd/format test split::polygons_split_into_prims_by_their_name_paths
 kinogaki-usd/format test subdivision::every_subdivision_attribute_reads_writes_and_reads_back
 kinogaki-usd/lib test lights::tests::a_lens_is_millimetres_whatever_the_stage_unit
 kinogaki-usd/lib test lights::tests::lights_read_and_write_back_in_any_units

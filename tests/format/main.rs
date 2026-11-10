@@ -19,5 +19,6 @@ mod materialx;
 mod measure;
 mod portals;
 mod primvars;
+mod split;
 mod subdivision;
 mod support;
